@@ -6,6 +6,7 @@
 use crate::api::*;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
+use std::time::Instant;
 
 pub enum Req {
     Home,
@@ -51,7 +52,8 @@ pub enum Resp {
     Reflections(Vec<Report>),
     Graph(Box<Graph>),
     Recall(Vec<RecallHit>),
-    Systems(Box<Systems>),
+    /// systems payload + measured round-trip latency in ms
+    Systems(Box<Systems>, u64),
     Scheduler(Box<Scheduler>),
     Events(Vec<Event>),
     LogSources(Vec<LogSource>),
@@ -95,7 +97,13 @@ fn handle(c: &Client, req: Req) -> Resp {
         Req::Reflections => wrap(c.reflections(), Resp::Reflections),
         Req::Graph(limit) => wrap(c.graph(limit), |g| Resp::Graph(Box::new(g))),
         Req::Recall { query, mode, k } => wrap(c.recall(&query, &mode, k), Resp::Recall),
-        Req::Systems => wrap(c.systems(), |s| Resp::Systems(Box::new(s))),
+        Req::Systems => {
+            let t = Instant::now();
+            match c.systems() {
+                Ok(s) => Resp::Systems(Box::new(s), t.elapsed().as_millis() as u64),
+                Err(e) => Resp::Error(format!("{e}")),
+            }
+        }
         Req::Scheduler => wrap(c.scheduler(), |s| Resp::Scheduler(Box::new(s))),
         Req::Events(n) => wrap(c.events(n), Resp::Events),
         Req::LogSources => wrap(c.log_sources(), Resp::LogSources),

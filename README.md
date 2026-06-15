@@ -75,7 +75,7 @@ gauges, and sparklines where they add insight.
 | 2 | **Memory** | **Browse** (FTS search, validity/status filter chips, paginate, invalidate) · **Episodes** (timeline + derived-memory detail, extraction ratio) · **Recall** (semantic fast/deep/divergent, score bars) |
 | 3 | **Mind** | A self-model monitor — **Overview** (who I am · how I think · what I'm focused on · current chapter · latest insight) · **Self** (identity facts + principles) · **Focus** (mental-load gauge + focus bars) · **Story** (current chapter + timeline) · **Insights** (reflections) |
 | 4 | **Graph** | Knowledge entities by degree + neighbor explorer; entities/edges/density/types header |
-| 5 | **Systems** | An ops monitor — **Overview** (health KPIs, infra, engine activity bars, live scheduler/agents) · **Agents** (status breakdown, step inspector, **cancel** running) · **Scheduler** (task manager: **toggle / run / delete / new** your jobs + read-only system cron) · **Events** (categorized feed — Agents/Goals/Knowledge/Memory/Cognition/Decisions, filter with `c`) · **Logs** (per-source tail) |
+| 5 | **Systems** | An ops monitor — **Overview** (health KPIs, per-service **uptime strips** + live **API-latency** sparkline, engine 7-day activity bars, scheduler/agents/data) · **Agents** (status breakdown, step inspector, **cancel** running) · **Scheduler** (task manager: **toggle / run / delete / new** your jobs + read-only system cron) · **Events** (categorized feed — Agents/Goals/Knowledge/Memory/Cognition/Decisions, filter with `c`) · **Logs** (per-source tail) |
 
 The header always shows the connected host, scheduler status, job count, and any failures.
 **Home and Systems auto-refresh every 3s** so you can watch things move without pressing `r`.
@@ -89,7 +89,9 @@ The header always shows the connected host, scheduler status, job count, and any
 ### Mind · Focus
 ![Mind — Focus](docs/mind-focus.png)
 
-### Systems · Overview — an ops monitor
+### Systems · Overview — a live service monitor
+Per-service uptime strips and an API-latency sparkline (both built from the rolling 3s health polls), engine 7-day activity bars, and live scheduler/agents/data.
+
 ![Systems — Overview](docs/sys-overview.png)
 
 ### Systems · Scheduler — manage your scheduled jobs

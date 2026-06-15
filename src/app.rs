@@ -73,6 +73,15 @@ impl Tab {
     }
 }
 
+/// One sample of system health, recorded each `/api/systems` poll.
+pub struct SysSample {
+    pub latency_ms: u64,
+    /// (service name, up) for each infrastructure service this poll
+    pub services: Vec<(String, bool)>,
+}
+
+pub const SYS_HISTORY_CAP: usize = 90;
+
 /// A scrollable list selection wrapping ratatui's `ListState`.
 #[derive(Default)]
 pub struct Sel {
@@ -224,6 +233,8 @@ pub struct App {
     // systems
     pub sys_sub: usize,
     pub systems: Option<Systems>,
+    /// rolling history of /api/systems polls, for uptime strips + latency graph
+    pub sys_history: Vec<SysSample>,
     pub scheduler: Option<Scheduler>,
     pub scheduled_jobs: Vec<ScheduledJob>,
     pub sched_sel: Sel,
@@ -283,6 +294,7 @@ impl App {
             frame: 0,
             sys_sub: 0,
             systems: None,
+            sys_history: Vec::new(),
             scheduler: None,
             scheduled_jobs: vec![],
             sched_sel: Sel::default(),
@@ -482,7 +494,15 @@ impl App {
                 self.recall_sel.first();
                 self.recall_hits = v;
             }
-            Resp::Systems(s) => self.systems = Some(*s),
+            Resp::Systems(s, latency_ms) => {
+                let services = s.infrastructure.iter().map(|i| (i.name.clone(), i.ok)).collect();
+                self.sys_history.push(SysSample { latency_ms, services });
+                if self.sys_history.len() > SYS_HISTORY_CAP {
+                    let drop = self.sys_history.len() - SYS_HISTORY_CAP;
+                    self.sys_history.drain(0..drop);
+                }
+                self.systems = Some(*s);
+            }
             Resp::Scheduler(s) => self.scheduler = Some(*s),
             Resp::Events(v) => {
                 self.events = v;

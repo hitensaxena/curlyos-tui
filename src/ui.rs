@@ -1275,17 +1275,18 @@ fn draw_sys_overview(f: &mut Frame, app: &App, area: Rect) {
     };
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(6), Constraint::Min(0)])
+        .constraints([Constraint::Length(6), Constraint::Length(9), Constraint::Min(0)])
         .split(area);
 
-    // KPI cards
+    // ── KPI cards ─────────────────────────────────────────────────────────
     let up = sys.infrastructure.iter().filter(|i| i.ok).count();
-    let active_eng = sys.engines.iter().filter(|e| e.runs_24h > 0).count();
     let running = app.agent_runs.iter().filter(|r| r.status.as_deref() == Some("running")).count();
     let failing = sys.scheduler.failing.len();
+    let latency = app.sys_history.last().map(|s| s.latency_ms).unwrap_or(0);
+    let lat_col = if latency > 1500 { RED } else if latency > 600 { AMBER } else { GREEN };
     let cards: [(&str, String, Color); 5] = [
         ("SERVICES", format!("{}/{}", up, sys.infrastructure.len()), if up == sys.infrastructure.len() { GREEN } else { RED }),
-        ("ENGINES ON", format!("{}/{}", active_eng, sys.engines.len()), MINT),
+        ("API LATENCY", format!("{latency}ms"), lat_col),
         ("AGENTS RUN", fmt_int(running as i64), if running > 0 { AMBER } else { DIM }),
         ("JOBS", fmt_int(sys.scheduler.jobs), PERI),
         ("FAILING", fmt_int(failing as i64), if failing > 0 { RED } else { DIM }),
@@ -1303,37 +1304,68 @@ fn draw_sys_overview(f: &mut Frame, app: &App, area: Rect) {
         );
     }
 
-    let cols = Layout::default()
+    // ── services (uptime strips) + latency graph ─────────────────────────
+    let midcols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(33), Constraint::Percentage(40), Constraint::Percentage(27)])
+        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
         .split(rows[1]);
 
-    // infrastructure
-    let mut infra: Vec<Line> = vec![];
+    let mut svc: Vec<Line> = vec![];
     for i in &sys.infrastructure {
-        infra.push(Line::from(vec![
-            Span::styled("  ● ", Style::default().fg(if i.ok { GREEN } else { RED })),
-            Span::styled(format!("{:<10}", i.name), Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
-        ]));
-        infra.push(Line::from(Span::styled(format!("      {}", truncate(i.detail.as_deref().unwrap_or(""), 32)), Style::default().fg(FAINT))));
+        let (strip, pct) = uptime_strip(&app.sys_history, &i.name, 26);
+        let mut spans = vec![
+            Span::styled("● ", Style::default().fg(if i.ok { GREEN } else { RED })),
+            Span::styled(fit(&i.name, 10), Style::default().fg(TEXT).bold()),
+            Span::styled(fit(&svc_version(&i.name, i.detail.as_deref()), 16), Style::default().fg(FAINT)),
+        ];
+        spans.extend(strip);
+        spans.push(Span::styled(format!(" {pct:>3.0}%"), Style::default().fg(if pct >= 99.9 { GREEN } else { AMBER })));
+        svc.push(Line::from(spans));
     }
-    f.render_widget(Paragraph::new(infra).block(panel("Infrastructure")).wrap(Wrap { trim: true }), cols[0]);
+    let checks = app.sys_history.len();
+    f.render_widget(
+        Paragraph::new(svc).block(panel(&format!("Services · last {checks} checks"))),
+        midcols[0],
+    );
 
-    // engines as activity bars
+    // latency sparkline
+    let lats: Vec<u64> = app.sys_history.iter().map(|s| s.latency_ms).collect();
+    let (lmin, lmax, lavg) = stats_u64(&lats);
+    let lat_lines = vec![
+        Line::from(Span::styled(spark(&lats), Style::default().fg(CYAN))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(format!("{}ms", lats.last().copied().unwrap_or(0)), Style::default().fg(lat_col).bold()),
+            Span::styled(" now", Style::default().fg(DIM)),
+        ]),
+        Line::from(Span::styled(format!("min {lmin} · avg {lavg} · max {lmax} ms", ), Style::default().fg(FAINT))),
+    ];
+    f.render_widget(Paragraph::new(lat_lines).block(panel("API latency")), midcols[1]);
+
+    // ── engines (bar chart) + scheduler/live ─────────────────────────────
+    let botcols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+        .split(rows[2]);
+
     let emax = sys.engines.iter().map(|e| e.runs_7d).max().unwrap_or(1).max(1);
     let mut eng: Vec<Line> = vec![];
     for e in &sys.engines {
         let active = e.runs_24h > 0;
+        let col = if active { MINT } else { FAINT };
         eng.push(Line::from(vec![
-            Span::styled(format!("  {:<14}", truncate(e.label.as_deref().unwrap_or(&e.name), 14)), Style::default().fg(if active { TEXT } else { DIM })),
-            Span::styled(bar_str(e.runs_7d, emax, 10), Style::default().fg(if active { MINT } else { FAINT })),
-            Span::styled(format!(" {}·24h {}·7d", e.runs_24h, e.runs_7d), Style::default().fg(DIM)),
+            Span::styled(format!("  {}", fit(e.label.as_deref().unwrap_or(&e.name), 22)), Style::default().fg(if active { TEXT } else { DIM })),
+            Span::styled(bar_str(e.runs_7d, emax, 14), Style::default().fg(col)),
+            Span::styled(format!(" {:>5}/7d", e.runs_7d), Style::default().fg(DIM)),
+            Span::styled(format!("  {:>3}/24h", e.runs_24h), Style::default().fg(if active { MINT } else { FAINT })),
         ]));
-        eng.push(Line::from(Span::styled(format!("      last {}", fmt_date(e.last_run.as_deref())), Style::default().fg(FAINT))));
+        eng.push(Line::from(Span::styled(
+            format!("    last run {}", e.last_run.as_deref().map(|d| fmt_date(Some(d))).unwrap_or_else(|| "—".into())),
+            Style::default().fg(FAINT),
+        )));
     }
-    f.render_widget(Paragraph::new(eng).block(panel(&format!("Engines ({})", sys.engines.len()))), cols[1]);
+    f.render_widget(Paragraph::new(eng).block(panel(&format!("Engines · 7-day activity ({})", sys.engines.len()))), botcols[0]);
 
-    // scheduler + agents + data
     let mut right: Vec<Line> = vec![head("Scheduler")];
     right.push(Line::from(vec![
         Span::styled("  ● ", Style::default().fg(if sys.scheduler.running { GREEN } else { RED })),
@@ -1342,14 +1374,14 @@ fn draw_sys_overview(f: &mut Frame, app: &App, area: Rect) {
     ]));
     right.push(Line::from(Span::styled(format!("    next {}", fmt_date(sys.scheduler.next_due.as_deref())), Style::default().fg(FAINT))));
     right.push(Line::from(""));
-    right.push(head("Agents"));
+    right.push(head(&format!("Agents · {running} running")));
     if running == 0 {
         right.push(Line::from(Span::styled("  ● idle", Style::default().fg(DIM))));
     } else {
-        for r in app.agent_runs.iter().filter(|r| r.status.as_deref() == Some("running")).take(4) {
+        for r in app.agent_runs.iter().filter(|r| r.status.as_deref() == Some("running")).take(3) {
             right.push(Line::from(vec![
                 Span::styled("  ◌ ", Style::default().fg(AMBER)),
-                Span::styled(r.agent.clone().unwrap_or_default(), Style::default().fg(PURPLE).bold()),
+                Span::styled(truncate(&r.agent.clone().unwrap_or_default(), 22), Style::default().fg(PURPLE).bold()),
             ]));
         }
     }
@@ -1358,7 +1390,75 @@ fn draw_sys_overview(f: &mut Frame, app: &App, area: Rect) {
     right.push(kv("memories", &fmt_int(sys.stats.memories)));
     right.push(kv("episodes", &fmt_int(sys.stats.episodes)));
     right.push(kv("entities", &fmt_int(sys.stats.knowledge_entities)));
-    f.render_widget(Paragraph::new(right).block(panel("Live")).wrap(Wrap { trim: true }), cols[2]);
+    right.push(kv("edges", &fmt_int(sys.stats.knowledge_edges)));
+    f.render_widget(Paragraph::new(right).block(panel("Live")).wrap(Wrap { trim: true }), botcols[1]);
+}
+
+/// A coloured uptime strip for one service from the poll history (oldest→newest).
+fn uptime_strip(history: &[crate::app::SysSample], name: &str, width: usize) -> (Vec<Span<'static>>, f64) {
+    let recent: Vec<&crate::app::SysSample> = {
+        let mut v: Vec<&crate::app::SysSample> = history.iter().rev().take(width).collect();
+        v.reverse();
+        v
+    };
+    let mut spans = Vec::with_capacity(recent.len());
+    let (mut up, mut total) = (0usize, 0usize);
+    for s in &recent {
+        match s.services.iter().find(|(n, _)| n == name) {
+            Some((_, true)) => {
+                up += 1;
+                total += 1;
+                spans.push(Span::styled("▮", Style::default().fg(GREEN)));
+            }
+            Some((_, false)) => {
+                total += 1;
+                spans.push(Span::styled("▮", Style::default().fg(RED)));
+            }
+            None => spans.push(Span::styled("·", Style::default().fg(FAINT))),
+        }
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled("· waiting", Style::default().fg(FAINT)));
+    }
+    let pct = if total > 0 { up as f64 / total as f64 * 100.0 } else { 100.0 };
+    (spans, pct)
+}
+
+/// Compact a service's detail string into a short version label.
+fn svc_version(name: &str, detail: Option<&str>) -> String {
+    let d = detail.unwrap_or("").trim();
+    if d.is_empty() {
+        return "—".into();
+    }
+    if name.contains("postgres") {
+        // "PostgreSQL 16.14 (Debian …) … +pgvector" → "16.14 +pgvector"
+        let ver = d.split_whitespace().nth(1).unwrap_or("");
+        let vec = if d.contains("pgvector") { " +pgvector" } else { "" };
+        format!("{ver}{vec}")
+    } else {
+        truncate(d, 16)
+    }
+}
+
+fn stats_u64(xs: &[u64]) -> (u64, u64, u64) {
+    if xs.is_empty() {
+        return (0, 0, 0);
+    }
+    let min = *xs.iter().min().unwrap();
+    let max = *xs.iter().max().unwrap();
+    let avg = xs.iter().sum::<u64>() / xs.len() as u64;
+    (min, max, avg)
+}
+
+/// Truncate-or-pad a string to exactly `n` display columns.
+fn fit(s: &str, n: usize) -> String {
+    let len = s.chars().count();
+    if len > n {
+        let t: String = s.chars().take(n.saturating_sub(1)).collect();
+        format!("{t}…")
+    } else {
+        format!("{s}{}", " ".repeat(n - len))
+    }
 }
 
 fn draw_sys_scheduler(f: &mut Frame, app: &mut App, area: Rect) {
