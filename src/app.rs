@@ -10,6 +10,35 @@ pub const TABS: [&str; 5] = ["Home", "Memory", "Mind", "Graph", "Systems"];
 pub const MEM_SUBS: [&str; 3] = ["Browse", "Episodes", "Recall"];
 pub const MIND_SUBS: [&str; 5] = ["Overview", "Self", "Focus", "Story", "Insights"];
 pub const SYS_SUBS: [&str; 5] = ["Overview", "Agents", "Scheduler", "Events", "Logs"];
+pub const EVENT_CATS: [&str; 8] =
+    ["All", "Agents", "Goals", "Knowledge", "Memory", "Cognition", "Decisions", "Other"];
+
+/// Bucket an event type into a category index (1..=7; 0 is the "All" filter).
+pub fn event_cat_index(etype: &str) -> usize {
+    let t = etype;
+    if t.contains("agent") {
+        1
+    } else if t.contains("goal") {
+        2
+    } else if t.contains("knowledge") || t.contains("entity") || t.contains("edge") {
+        3
+    } else if t.contains("memory") || t.contains("episode") {
+        4
+    } else if t.contains("reflection")
+        || t.contains("consolidation")
+        || t.contains("narrative")
+        || t.contains("attention")
+        || t.contains("meta")
+        || t.contains("identity")
+        || t.contains("principle")
+    {
+        5
+    } else if t.contains("decision") {
+        6
+    } else {
+        7
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tab {
@@ -107,6 +136,8 @@ pub enum Detail {
 pub enum Pending {
     Invalidate(String),
     RunJob { id: String, name: String },
+    DeleteJob { id: String, name: String },
+    CancelRun { id: String },
 }
 
 #[derive(Clone)]
@@ -120,6 +151,7 @@ pub enum FormKind {
     Capture,
     Identity,
     Compose,
+    NewJob,
 }
 
 pub struct FormField {
@@ -197,6 +229,7 @@ pub struct App {
     pub sched_sel: Sel,
     pub events: Vec<Event>,
     pub event_sel: Sel,
+    pub event_cat: usize,
     pub log_sources: Vec<LogSource>,
     pub log_source_idx: usize,
     pub logs: Option<Logs>,
@@ -255,6 +288,7 @@ impl App {
             sched_sel: Sel::default(),
             events: vec![],
             event_sel: Sel::default(),
+            event_cat: 0,
             log_sources: vec![],
             log_source_idx: 0,
             logs: None,
@@ -305,6 +339,14 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Events matching the active category filter (`event_cat`; 0 = All).
+    pub fn filtered_events(&self) -> Vec<&Event> {
+        self.events
+            .iter()
+            .filter(|e| self.event_cat == 0 || event_cat_index(&e.etype) == self.event_cat)
+            .collect()
     }
 
     /// Active sub-view index for the current space.
@@ -366,7 +408,10 @@ impl App {
             },
             Tab::Graph => self.send(Req::Graph(60)),
             Tab::Systems => match self.sys_sub {
-                0 => self.send(Req::Systems),
+                0 => {
+                    self.send(Req::Systems);
+                    self.send(Req::AgentRuns(40));
+                }
                 1 => self.send(Req::AgentRuns(60)),
                 2 => {
                     self.send(Req::Scheduler);
@@ -440,11 +485,12 @@ impl App {
             Resp::Systems(s) => self.systems = Some(*s),
             Resp::Scheduler(s) => self.scheduler = Some(*s),
             Resp::Events(v) => {
-                self.event_sel.set_len(v.len());
+                self.events = v;
+                let n = self.filtered_events().len();
+                self.event_sel.set_len(n);
                 if self.event_sel.selected().is_none() {
                     self.event_sel.first();
                 }
-                self.events = v;
             }
             Resp::LogSources(v) => {
                 self.log_source_idx = self.log_source_idx.min(v.len().saturating_sub(1));
@@ -744,9 +790,24 @@ impl App {
                 KeyCode::Char('t') => self.open_cognition_menu(),
                 _ => {}
             },
-            // Systems · Scheduler (run job) / Logs (cycle source)
-            (Tab::Systems, 2) => {
-                if key.code == KeyCode::Char('x') {
+            // Systems · Agents — cancel a running run
+            (Tab::Systems, 1) => {
+                if key.code == KeyCode::Char('c') {
+                    if let Some(r) = self.agent_sel.selected().and_then(|i| self.agent_runs.get(i)) {
+                        if r.status.as_deref() == Some("running") {
+                            self.overlay = Overlay::Confirm {
+                                msg: format!("Cancel this running agent?\n\n{}", truncate(&r.task, 140)),
+                                action: Pending::CancelRun { id: r.id.clone() },
+                            };
+                        } else {
+                            self.status = Some(("only running agents can be cancelled".into(), true));
+                        }
+                    }
+                }
+            }
+            // Systems · Scheduler — manage your jobs
+            (Tab::Systems, 2) => match key.code {
+                KeyCode::Char('x') => {
                     if let Some(j) = self.sched_sel.selected().and_then(|i| self.scheduled_jobs.get(i)) {
                         self.overlay = Overlay::Confirm {
                             msg: format!("Run job now?\n\n{}", j.name),
@@ -754,7 +815,38 @@ impl App {
                         };
                     }
                 }
+                KeyCode::Char('e') => {
+                    if let Some(j) = self.sched_sel.selected().and_then(|i| self.scheduled_jobs.get(i)) {
+                        let (id, now) = (j.id.clone(), j.enabled);
+                        let label = format!("Job '{}' {}", j.name, if now { "disabled" } else { "enabled" });
+                        self.send(Req::UpdateJob {
+                            id,
+                            label,
+                            body: serde_json::json!({ "enabled": !now }),
+                        });
+                    }
+                }
+                KeyCode::Char('d') => {
+                    if let Some(j) = self.sched_sel.selected().and_then(|i| self.scheduled_jobs.get(i)) {
+                        self.overlay = Overlay::Confirm {
+                            msg: format!("Delete this scheduled job?\n\n{}", j.name),
+                            action: Pending::DeleteJob { id: j.id.clone(), name: j.name.clone() },
+                        };
+                    }
+                }
+                KeyCode::Char('n') => self.open_form(FormKind::NewJob),
+                _ => {}
+            },
+            // Systems · Events — cycle category filter
+            (Tab::Systems, 3) => {
+                if key.code == KeyCode::Char('c') {
+                    self.event_cat = (self.event_cat + 1) % EVENT_CATS.len();
+                    let n = self.filtered_events().len();
+                    self.event_sel.set_len(n);
+                    self.event_sel.first();
+                }
             }
+            // Systems · Logs — cycle source
             (Tab::Systems, 4) => {
                 if key.code == KeyCode::Char('s') && !self.log_sources.is_empty() {
                     self.log_source_idx = (self.log_source_idx + 1) % self.log_sources.len();
@@ -843,6 +935,19 @@ impl App {
                 ],
                 active: 0,
             },
+            FormKind::NewJob => Form {
+                kind,
+                title: "New scheduled job".into(),
+                fields: vec![
+                    FormField { label: "name".into(), value: String::new() },
+                    FormField { label: "task (what the agent should do)".into(), value: String::new() },
+                    FormField {
+                        label: "cadence — e.g. 'daily 09:00' · 'every 60' · 'weekly 0,2 18:00' · 'monthly 1 09:00'".into(),
+                        value: "daily 09:00".into(),
+                    },
+                ],
+                active: 0,
+            },
         };
         self.overlay = Overlay::Form(form);
     }
@@ -860,6 +965,8 @@ impl App {
                             label: format!("Run '{name}'"),
                             body: serde_json::json!({}),
                         }),
+                        Pending::DeleteJob { id, name } => self.send(Req::DeleteJob { id, name }),
+                        Pending::CancelRun { id } => self.send(Req::CancelRun { id }),
                     }
                 }
             }
@@ -987,7 +1094,53 @@ impl App {
                     self.send(Req::ProposeIdentity { predicate, object, confidence });
                 }
             }
+            FormKind::NewJob => {
+                let name = form.fields[0].value.trim().to_string();
+                let task = form.fields[1].value.trim().to_string();
+                let cadence = form.fields[2].value.trim();
+                if name.is_empty() || task.is_empty() {
+                    self.status = Some(("name and task are required".into(), true));
+                } else if let Some((cadence_type, cadence_json)) = parse_cadence_input(cadence) {
+                    self.send(Req::CreateJob { name, task, cadence_type, cadence_json });
+                } else {
+                    self.status = Some((
+                        "bad cadence — try 'daily 09:00', 'every 60', 'weekly 0,2 18:00', 'monthly 1 09:00'".into(),
+                        true,
+                    ));
+                }
+            }
         }
+    }
+}
+
+/// Parse a compact cadence string into (cadence_type, cadence_json) for the API.
+/// Forms: `every <minutes>` · `daily HH:MM` · `weekly <d,d> HH:MM` (0=Mon..6=Sun)
+/// · `monthly <day> HH:MM`.
+fn parse_cadence_input(s: &str) -> Option<(String, serde_json::Value)> {
+    let toks: Vec<&str> = s.split_whitespace().collect();
+    let hhmm_ok = |t: &str| -> Option<String> {
+        let (h, m) = t.split_once(':')?;
+        let (h, m) = (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?);
+        (h <= 23 && m <= 59).then(|| format!("{h:02}:{m:02}"))
+    };
+    match toks.as_slice() {
+        ["every", n] => {
+            let m = n.parse::<i64>().ok()?;
+            Some(("every".into(), serde_json::json!({ "minutes": m })))
+        }
+        ["daily", t] => Some(("daily_at".into(), serde_json::json!({ "hhmm": hhmm_ok(t)? }))),
+        ["weekly", days, t] => {
+            let wd: Vec<i64> = days.split(',').filter_map(|d| d.trim().parse::<i64>().ok()).filter(|d| (0..=6).contains(d)).collect();
+            if wd.is_empty() {
+                return None;
+            }
+            Some(("weekly_at".into(), serde_json::json!({ "weekdays": wd, "hhmm": hhmm_ok(t)? })))
+        }
+        ["monthly", day, t] => {
+            let d = day.parse::<i64>().ok().filter(|d| (1..=28).contains(d))?;
+            Some(("monthly_at".into(), serde_json::json!({ "day": d, "hhmm": hhmm_ok(t)? })))
+        }
+        _ => None,
     }
 }
 

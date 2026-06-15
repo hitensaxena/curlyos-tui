@@ -75,7 +75,7 @@ gauges, and sparklines where they add insight.
 | 2 | **Memory** | **Browse** (FTS search, validity/status filter chips, paginate, invalidate) · **Episodes** (timeline + derived-memory detail, extraction ratio) · **Recall** (semantic fast/deep/divergent, score bars) |
 | 3 | **Mind** | A self-model monitor — **Overview** (who I am · how I think · what I'm focused on · current chapter · latest insight) · **Self** (identity facts + principles) · **Focus** (mental-load gauge + focus bars) · **Story** (current chapter + timeline) · **Insights** (reflections) |
 | 4 | **Graph** | Knowledge entities by degree + neighbor explorer; entities/edges/density/types header |
-| 5 | **Systems** | **Overview** (infra, engines 24h/7d, scheduler) · **Agents** (runs + live step inspector) · **Scheduler** (cron + user jobs, run-now) · **Events** (feed + JSON inspector) · **Logs** (per-source tail) |
+| 5 | **Systems** | An ops monitor — **Overview** (health KPIs, infra, engine activity bars, live scheduler/agents) · **Agents** (status breakdown, step inspector, **cancel** running) · **Scheduler** (task manager: **toggle / run / delete / new** your jobs + read-only system cron) · **Events** (categorized feed — Agents/Goals/Knowledge/Memory/Cognition/Decisions, filter with `c`) · **Logs** (per-source tail) |
 
 The header always shows the connected host, scheduler status, job count, and any failures.
 **Home and Systems auto-refresh every 3s** so you can watch things move without pressing `r`.
@@ -89,8 +89,18 @@ The header always shows the connected host, scheduler status, job count, and any
 ### Mind · Focus
 ![Mind — Focus](docs/mind-focus.png)
 
-### Systems · Agents
-![Systems — Agents](docs/systems.png)
+### Systems · Overview — an ops monitor
+![Systems — Overview](docs/sys-overview.png)
+
+### Systems · Scheduler — manage your scheduled jobs
+![Systems — Scheduler](docs/sys-scheduler.png)
+
+Create a job inline with a compact cadence (`daily 09:00`, `every 60`, `weekly 0,2 18:00`, `monthly 1 09:00`):
+
+![Systems — New job](docs/sys-newjob.png)
+
+### Systems · Events — categorized & filterable
+![Systems — Events](docs/sys-events-filtered.png)
 
 ### Graph
 ![Graph](docs/graph.png)
@@ -134,7 +144,10 @@ g / G            top / bottom              ?  q   help / quit
 Memory · Browse   / search · v validity · s status · n/p page · i invalidate
 Memory · Recall   / focus query · type + enter to search · m mode · enter open hit
 Mind              a propose fact (Identity) · t trigger reflection/narrative/consolidation
-Systems           x run scheduled job now (Scheduler) · s cycle log source (Logs)
+Sys · Agents      enter inspect · c cancel running run
+Sys · Scheduler   e enable/disable · x run now · d delete · n new job
+Sys · Events      c cycle category filter (Agents/Goals/Knowledge/Memory/…)
+Sys · Logs        s cycle log source
 Global            A capture episode (ingest)
 ```
 
@@ -152,9 +165,11 @@ The TUI is read-mostly. The only mutations it can perform are low-risk and expli
 - **Capture episode** (`A`) — posts to `/api/ingest`.
 - **Trigger cognition jobs** (`t`) — weekly/monthly reflection, consolidation, narrative
   generate/compose, attention scan.
-- **Run a scheduled job now** (`x`, Systems · Scheduler).
+- **Manage scheduled jobs** (Systems · Scheduler) — enable/disable (`e`), run now (`x`),
+  delete (`d`, confirmed), create a new job (`n`, with a compact cadence like `daily 09:00`).
+- **Cancel a running agent** (`c`, Systems · Agents, confirmed).
 
-No bulk deletes, no destructive operations, no goals/approvals/safety controls.
+No bulk memory deletes, no safety-kill, no approvals/goals control.
 
 ---
 

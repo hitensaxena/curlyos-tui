@@ -51,6 +51,22 @@ impl Client {
         serde_json::from_str(&text).with_context(|| format!("decode POST {url}"))
     }
 
+    fn send_empty(&self, method: reqwest::Method, path: &str, body: serde_json::Value) -> Result<()> {
+        let url = format!("{}{}", self.base, path);
+        let resp = self
+            .http
+            .request(method.clone(), &url)
+            .json(&body)
+            .send()
+            .with_context(|| format!("{method} {url}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().unwrap_or_default();
+            anyhow::bail!("{method} {url} -> {status}: {}", truncate(&text, 200));
+        }
+        Ok(())
+    }
+
     // ---- reads -----------------------------------------------------------
 
     pub fn health(&self) -> Result<Health> {
@@ -191,6 +207,38 @@ impl Client {
     pub fn trigger(&self, path: &str, body: serde_json::Value) -> Result<()> {
         let _: serde_json::Value = self.post(path, body)?;
         Ok(())
+    }
+
+    // ---- scheduled-job management ----------------------------------------
+
+    pub fn create_scheduled_job(
+        &self,
+        name: &str,
+        task: &str,
+        cadence_type: &str,
+        cadence_json: serde_json::Value,
+    ) -> Result<()> {
+        self.send_empty(
+            reqwest::Method::POST,
+            "/api/scheduled-jobs",
+            serde_json::json!({
+                "name": name, "task": task,
+                "cadence_type": cadence_type, "cadence_json": cadence_json,
+                "enabled": true,
+            }),
+        )
+    }
+
+    pub fn update_scheduled_job(&self, id: &str, body: serde_json::Value) -> Result<()> {
+        self.send_empty(reqwest::Method::PATCH, &format!("/api/scheduled-jobs/{id}"), body)
+    }
+
+    pub fn delete_scheduled_job(&self, id: &str) -> Result<()> {
+        self.send_empty(reqwest::Method::DELETE, &format!("/api/scheduled-jobs/{id}"), serde_json::json!({}))
+    }
+
+    pub fn cancel_agent_run(&self, id: &str) -> Result<()> {
+        self.send_empty(reqwest::Method::POST, &format!("/api/agents/runs/{id}/cancel"), serde_json::json!({}))
     }
 }
 

@@ -32,6 +32,10 @@ pub enum Req {
     ProposeIdentity { predicate: String, object: String, confidence: f64 },
     Ingest(String),
     Trigger { path: String, label: String, body: serde_json::Value },
+    CreateJob { name: String, task: String, cadence_type: String, cadence_json: serde_json::Value },
+    UpdateJob { id: String, label: String, body: serde_json::Value },
+    DeleteJob { id: String, name: String },
+    CancelRun { id: String },
 }
 
 pub enum Resp {
@@ -119,6 +123,24 @@ fn handle(c: &Client, req: Req) -> Resp {
         Req::Trigger { path, label, body } => match c.trigger(&path, body) {
             Ok(()) => Resp::ActionOk { msg: format!("{label} triggered"), refresh: true },
             Err(e) => Resp::Error(format!("{label}: {e}")),
+        },
+        Req::CreateJob { name, task, cadence_type, cadence_json } => {
+            match c.create_scheduled_job(&name, &task, &cadence_type, cadence_json) {
+                Ok(()) => Resp::ActionOk { msg: format!("Created job '{name}'"), refresh: true },
+                Err(e) => Resp::Error(format!("create job: {e}")),
+            }
+        }
+        Req::UpdateJob { id, label, body } => match c.update_scheduled_job(&id, body) {
+            Ok(()) => Resp::ActionOk { msg: label, refresh: true },
+            Err(e) => Resp::Error(format!("update job: {e}")),
+        },
+        Req::DeleteJob { id, name } => match c.delete_scheduled_job(&id) {
+            Ok(()) => Resp::ActionOk { msg: format!("Deleted job '{name}'"), refresh: true },
+            Err(e) => Resp::Error(format!("delete job: {e}")),
+        },
+        Req::CancelRun { id } => match c.cancel_agent_run(&id) {
+            Ok(()) => Resp::ActionOk { msg: format!("Cancelled {id}"), refresh: true },
+            Err(e) => Resp::Error(format!("cancel run: {e}")),
         },
     }
 }

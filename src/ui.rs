@@ -138,10 +138,11 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         (Tab::Mind, 1) => "↑↓ browse identity · a propose · t trigger",
         (Tab::Mind, _) => "↑↓ browse · t trigger reflection/narrative/consolidation",
         (Tab::Graph, _) => "↑↓ neighbors update",
-        (Tab::Systems, 1) => "enter inspect run · esc close · auto-refreshing",
-        (Tab::Systems, 2) => "↑↓ jobs · x run now",
+        (Tab::Systems, 1) => "enter inspect · c cancel running · esc close · auto-refreshing",
+        (Tab::Systems, 2) => "↑↓ jobs · e toggle · x run now · d delete · n new",
+        (Tab::Systems, 3) => "↑↓ events · c cycle category filter",
         (Tab::Systems, 4) => "s cycle log source",
-        (Tab::Systems, _) => "h/l sub-view · live",
+        (Tab::Systems, _) => "h/l sub-view · live ops monitor",
     };
     let line = Line::from(vec![
         Span::styled(" ? ", Style::default().fg(Color::Black).bg(PERI).bold()),
@@ -1272,64 +1273,183 @@ fn draw_sys_overview(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new("loading systems…").block(panel("Overview")), area);
         return;
     };
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(6), Constraint::Min(0)])
         .split(area);
 
-    let mut infra: Vec<Line> = vec![head("Infrastructure")];
-    for i in &sys.infrastructure {
-        let col = if i.ok { MINT } else { RED };
-        infra.push(Line::from(vec![
-            Span::styled("  ● ", Style::default().fg(col)),
-            Span::styled(format!("{:<12}", i.name), Style::default().fg(TEXT)),
-        ]));
-        infra.push(Line::from(Span::styled(format!("     {}", truncate(i.detail.as_deref().unwrap_or(""), 40)), Style::default().fg(FAINT))));
+    // KPI cards
+    let up = sys.infrastructure.iter().filter(|i| i.ok).count();
+    let active_eng = sys.engines.iter().filter(|e| e.runs_24h > 0).count();
+    let running = app.agent_runs.iter().filter(|r| r.status.as_deref() == Some("running")).count();
+    let failing = sys.scheduler.failing.len();
+    let cards: [(&str, String, Color); 5] = [
+        ("SERVICES", format!("{}/{}", up, sys.infrastructure.len()), if up == sys.infrastructure.len() { GREEN } else { RED }),
+        ("ENGINES ON", format!("{}/{}", active_eng, sys.engines.len()), MINT),
+        ("AGENTS RUN", fmt_int(running as i64), if running > 0 { AMBER } else { DIM }),
+        ("JOBS", fmt_int(sys.scheduler.jobs), PERI),
+        ("FAILING", fmt_int(failing as i64), if failing > 0 { RED } else { DIM }),
+    ];
+    let cs = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Ratio(1, 5); 5]).split(rows[0]);
+    for (i, (label, val, col)) in cards.iter().enumerate() {
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(*label, Style::default().fg(DIM))),
+                Line::from(Span::styled(val.clone(), Style::default().fg(*col).bold())),
+            ])
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(FAINT))),
+            cs[i],
+        );
     }
-    infra.push(Line::from(""));
-    infra.push(head("Scheduler"));
-    let (dot, col) = if sys.scheduler.running { ("●", MINT) } else { ("●", RED) };
-    infra.push(Line::from(vec![
-        Span::styled(format!("  {dot} "), Style::default().fg(col)),
-        Span::styled(format!("{} jobs", sys.scheduler.jobs), Style::default().fg(TEXT)),
-        Span::styled(format!("  ·  {} failing", sys.scheduler.failing.len()), Style::default().fg(if sys.scheduler.failing.is_empty() { DIM } else { RED })),
-    ]));
-    infra.push(kv("next due", &fmt_date(sys.scheduler.next_due.as_deref())));
-    f.render_widget(Paragraph::new(infra).block(panel("Health")).wrap(Wrap { trim: true }), cols[0]);
 
-    let mut eng: Vec<Line> = vec![Line::from(vec![
-        Span::styled(format!("  {:<20}", "engine"), Style::default().fg(CORAL).bold()),
-        Span::styled(format!("{:<7}", "24h"), Style::default().fg(CORAL).bold()),
-        Span::styled(format!("{:<7}", "7d"), Style::default().fg(CORAL).bold()),
-        Span::styled("last run", Style::default().fg(CORAL).bold()),
-    ])];
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(33), Constraint::Percentage(40), Constraint::Percentage(27)])
+        .split(rows[1]);
+
+    // infrastructure
+    let mut infra: Vec<Line> = vec![];
+    for i in &sys.infrastructure {
+        infra.push(Line::from(vec![
+            Span::styled("  ● ", Style::default().fg(if i.ok { GREEN } else { RED })),
+            Span::styled(format!("{:<10}", i.name), Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
+        ]));
+        infra.push(Line::from(Span::styled(format!("      {}", truncate(i.detail.as_deref().unwrap_or(""), 32)), Style::default().fg(FAINT))));
+    }
+    f.render_widget(Paragraph::new(infra).block(panel("Infrastructure")).wrap(Wrap { trim: true }), cols[0]);
+
+    // engines as activity bars
+    let emax = sys.engines.iter().map(|e| e.runs_7d).max().unwrap_or(1).max(1);
+    let mut eng: Vec<Line> = vec![];
     for e in &sys.engines {
         let active = e.runs_24h > 0;
         eng.push(Line::from(vec![
-            Span::styled(format!("  {:<20}", truncate(e.label.as_deref().unwrap_or(&e.name), 20)), Style::default().fg(TEXT)),
-            Span::styled(format!("{:<7}", e.runs_24h), Style::default().fg(if active { MINT } else { DIM })),
-            Span::styled(format!("{:<7}", e.runs_7d), Style::default().fg(DIM)),
-            Span::styled(fmt_date(e.last_run.as_deref()), Style::default().fg(FAINT)),
+            Span::styled(format!("  {:<14}", truncate(e.label.as_deref().unwrap_or(&e.name), 14)), Style::default().fg(if active { TEXT } else { DIM })),
+            Span::styled(bar_str(e.runs_7d, emax, 10), Style::default().fg(if active { MINT } else { FAINT })),
+            Span::styled(format!(" {}·24h {}·7d", e.runs_24h, e.runs_7d), Style::default().fg(DIM)),
         ]));
+        eng.push(Line::from(Span::styled(format!("      last {}", fmt_date(e.last_run.as_deref())), Style::default().fg(FAINT))));
     }
     f.render_widget(Paragraph::new(eng).block(panel(&format!("Engines ({})", sys.engines.len()))), cols[1]);
+
+    // scheduler + agents + data
+    let mut right: Vec<Line> = vec![head("Scheduler")];
+    right.push(Line::from(vec![
+        Span::styled("  ● ", Style::default().fg(if sys.scheduler.running { GREEN } else { RED })),
+        Span::styled(if sys.scheduler.running { "running" } else { "stopped" }, Style::default().fg(TEXT).bold()),
+        Span::styled(format!("  {} jobs", sys.scheduler.jobs), Style::default().fg(DIM)),
+    ]));
+    right.push(Line::from(Span::styled(format!("    next {}", fmt_date(sys.scheduler.next_due.as_deref())), Style::default().fg(FAINT))));
+    right.push(Line::from(""));
+    right.push(head("Agents"));
+    if running == 0 {
+        right.push(Line::from(Span::styled("  ● idle", Style::default().fg(DIM))));
+    } else {
+        for r in app.agent_runs.iter().filter(|r| r.status.as_deref() == Some("running")).take(4) {
+            right.push(Line::from(vec![
+                Span::styled("  ◌ ", Style::default().fg(AMBER)),
+                Span::styled(r.agent.clone().unwrap_or_default(), Style::default().fg(PURPLE).bold()),
+            ]));
+        }
+    }
+    right.push(Line::from(""));
+    right.push(head("Data"));
+    right.push(kv("memories", &fmt_int(sys.stats.memories)));
+    right.push(kv("episodes", &fmt_int(sys.stats.episodes)));
+    right.push(kv("entities", &fmt_int(sys.stats.knowledge_entities)));
+    f.render_widget(Paragraph::new(right).block(panel("Live")).wrap(Wrap { trim: true }), cols[2]);
 }
 
 fn draw_sys_scheduler(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(area);
 
-    // system cron jobs
+    let enabled = app.scheduled_jobs.iter().filter(|j| j.enabled).count();
+    let failed = app.scheduled_jobs.iter().filter(|j| j.last_error.is_some()).count();
+    let sys_jobs = app.scheduler.as_ref().map(|s| s.jobs.len()).unwrap_or(0);
+    f.render_widget(
+        Paragraph::new(stat_bar(&[
+            ("your jobs", fmt_int(app.scheduled_jobs.len() as i64), GREEN),
+            ("enabled", fmt_int(enabled as i64), MINT),
+            ("errored", fmt_int(failed as i64), if failed > 0 { RED } else { DIM }),
+            ("system jobs", fmt_int(sys_jobs as i64), PERI),
+        ])),
+        rows[0],
+    );
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[1]);
+
+    // your jobs — selectable + manageable
+    let items: Vec<ListItem> = app
+        .scheduled_jobs
+        .iter()
+        .map(|j| {
+            ListItem::new(vec![
+                Line::from(vec![
+                    enabled_badge(j.enabled),
+                    job_status_dot(j.last_status.as_deref()),
+                    Span::styled(truncate(&j.name, 26), Style::default().fg(TEXT).bold()),
+                ]),
+                Line::from(vec![
+                    Span::styled(format!("    {} ", j.cadence_display.clone().unwrap_or_default()), Style::default().fg(PERI)),
+                    Span::styled(format!("· next {}", fmt_date(j.next_due.as_deref())), Style::default().fg(FAINT)),
+                ]),
+            ])
+        })
+        .collect();
+    f.render_stateful_widget(
+        list_of(format!("Your jobs ({}) · e toggle · x run · d delete · n new", app.scheduled_jobs.len()), items),
+        cols[0],
+        &mut app.sched_sel.state,
+    );
+
+    // right: selected detail + system cron jobs
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(cols[1]);
+
+    let detail = app
+        .sched_sel
+        .selected()
+        .and_then(|i| app.scheduled_jobs.get(i))
+        .map(|j| {
+            let mut lines = vec![
+                Line::from(vec![
+                    enabled_badge(j.enabled),
+                    Span::styled(j.name.clone(), Style::default().fg(TEXT).bold()),
+                ]),
+                kv("cadence", j.cadence_display.as_deref().unwrap_or("")),
+                kv("delivery", j.delivery.as_deref().unwrap_or("")),
+                kv("last run", &fmt_date(j.last_fired.as_deref())),
+                kv("last status", j.last_status.as_deref().unwrap_or("never")),
+                kv("next due", &fmt_date(j.next_due.as_deref())),
+                Line::from(""),
+                head("task"),
+                Line::from(Span::styled(truncate(&j.task, 300), Style::default().fg(TEXT))),
+            ];
+            if let Some(err) = &j.last_error {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(format!("error: {}", truncate(err, 120)), Style::default().fg(RED))));
+            }
+            Text::from(lines)
+        })
+        .unwrap_or_else(|| Text::from(Span::styled("select a job · n to create one", Style::default().fg(DIM))));
+    f.render_widget(Paragraph::new(detail).block(panel("Job")).wrap(Wrap { trim: true }), right[0]);
+
     let mut cron: Vec<Line> = vec![];
     if let Some(s) = &app.scheduler {
         for j in &s.jobs {
             cron.push(Line::from(vec![
-                status_dot(j.last_status.as_deref()),
-                Span::styled(format!("{:<24}", truncate(&j.name, 24)), Style::default().fg(TEXT)),
-                Span::styled(format!("{:<16}", j.cadence.clone().unwrap_or_default()), Style::default().fg(PERI)),
-                Span::styled(format!("next {}", fmt_date(j.next_due.as_deref())), Style::default().fg(DIM)),
+                job_status_dot(j.last_status.as_deref()),
+                Span::styled(format!("{:<22}", truncate(&j.name, 22)), Style::default().fg(TEXT)),
+                Span::styled(truncate(j.cadence.as_deref().unwrap_or(""), 14), Style::default().fg(FAINT)),
                 if j.consecutive_failures > 0 {
                     Span::styled(format!("  {}✗", j.consecutive_failures), Style::default().fg(RED).bold())
                 } else {
@@ -1338,63 +1458,71 @@ fn draw_sys_scheduler(f: &mut Frame, app: &mut App, area: Rect) {
             ]));
         }
     }
-    let cron_title = app.scheduler.as_ref().map(|s| format!("System jobs ({}) · {}", s.jobs.len(), if s.running { "running" } else { "stopped" })).unwrap_or_else(|| "System jobs".into());
-    f.render_widget(Paragraph::new(cron).block(panel(&cron_title)), rows[0]);
-
-    // user scheduled jobs (selectable, run-now with x)
-    let items: Vec<ListItem> = app
-        .scheduled_jobs
-        .iter()
-        .map(|j| {
-            ListItem::new(vec![
-                Line::from(vec![
-                    status_dot(j.last_status.as_deref()),
-                    Span::styled(format!("{:<28}", truncate(&j.name, 28)), Style::default().fg(TEXT)),
-                    Span::styled(format!("{:<14}", j.cadence_display.clone().unwrap_or_default()), Style::default().fg(PERI)),
-                    Span::styled(if j.enabled { "on " } else { "off" }, Style::default().fg(if j.enabled { MINT } else { DIM })),
-                    Span::styled(format!(" → {}", j.delivery.clone().unwrap_or_default()), Style::default().fg(DIM)),
-                ]),
-                Line::from(Span::styled(
-                    format!("    last {} · next {}{}", fmt_date(j.last_fired.as_deref()), fmt_date(j.next_due.as_deref()),
-                        j.last_error.as_deref().map(|e| format!(" · err: {}", truncate(e, 40))).unwrap_or_default()),
-                    Style::default().fg(FAINT),
-                )),
-            ])
-        })
-        .collect();
-    f.render_stateful_widget(
-        list_of(format!("Scheduled jobs ({}) · x run now", app.scheduled_jobs.len()), items),
-        rows[1],
-        &mut app.sched_sel.state,
+    f.render_widget(
+        Paragraph::new(cron).block(panel(&format!("System jobs ({}) · read-only", app.scheduler.as_ref().map(|s| s.jobs.len()).unwrap_or(0)))),
+        right[1],
     );
 }
 
 fn draw_sys_events(f: &mut Frame, app: &mut App, area: Rect) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(area);
 
-    let items: Vec<ListItem> = app
-        .events
+    // category filter chips with counts
+    let mut counts = [0usize; 8];
+    for e in &app.events {
+        counts[crate::app::event_cat_index(&e.etype)] += 1;
+        counts[0] += 1;
+    }
+    let mut chips = vec![Span::styled(" c ", Style::default().fg(Color::Black).bg(PERI).bold()), Span::raw(" ")];
+    for (i, name) in crate::app::EVENT_CATS.iter().enumerate() {
+        let active = i == app.event_cat;
+        let style = if active {
+            Style::default().fg(Color::Black).bg(event_cat_color(i)).bold()
+        } else {
+            Style::default().fg(if counts[i] == 0 { FAINT } else { event_cat_color(i) })
+        };
+        chips.push(Span::styled(format!(" {name} {} ", counts[i]), style));
+        chips.push(Span::raw(" "));
+    }
+    f.render_widget(Paragraph::new(Line::from(chips)), rows[0]);
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(rows[1]);
+
+    let filtered = app.filtered_events();
+    let items: Vec<ListItem> = filtered
         .iter()
         .map(|e| {
+            let ci = crate::app::event_cat_index(&e.etype);
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{} ", fmt_time(e.created_at.as_deref())), Style::default().fg(FAINT)),
-                Span::styled(format!("{:<26}", short_event(&e.etype)), Style::default().fg(event_color(&e.etype))),
-                Span::styled(truncate(e.subject.as_deref().unwrap_or(""), 30), Style::default().fg(DIM)),
+                Span::styled(format!("{:<10}", crate::app::EVENT_CATS[ci]), Style::default().fg(event_cat_color(ci)).bold()),
+                Span::styled(format!("{:<24}", short_event(&e.etype)), Style::default().fg(TEXT)),
+                Span::styled(truncate(e.subject.as_deref().unwrap_or(""), 26), Style::default().fg(DIM)),
             ]))
         })
         .collect();
-    f.render_stateful_widget(list_of(format!("Events ({})", app.events.len()), items), cols[0], &mut app.event_sel.state);
+    let cat_label = crate::app::EVENT_CATS[app.event_cat];
+    let list_title = format!("Events · {} ({})", cat_label, filtered.len());
 
+    // Build the preview (owned) before taking the mutable list-state borrow.
     let prev = app
         .event_sel
         .selected()
-        .and_then(|i| app.events.get(i))
+        .and_then(|i| filtered.get(i).copied())
         .map(|e| {
+            let ci = crate::app::event_cat_index(&e.etype);
             let mut lines = vec![
-                Line::from(Span::styled(e.etype.clone(), Style::default().fg(CORAL).bold())),
+                Line::from(vec![
+                    Span::styled(format!(" {} ", crate::app::EVENT_CATS[ci]), Style::default().fg(Color::Black).bg(event_cat_color(ci)).bold()),
+                    Span::raw(" "),
+                    Span::styled(short_event(&e.etype), Style::default().fg(CORAL).bold()),
+                ]),
                 kv("subject", e.subject.as_deref().unwrap_or("")),
                 kv("seq", &e.seq.to_string()),
                 kv("at", &fmt_date(e.created_at.as_deref())),
@@ -1407,6 +1535,9 @@ fn draw_sys_events(f: &mut Frame, app: &mut App, area: Rect) {
             Text::from(lines)
         })
         .unwrap_or_else(|| Text::from("no selection"));
+    drop(filtered);
+
+    f.render_stateful_widget(list_of(list_title, items), cols[0], &mut app.event_sel.state);
     f.render_widget(Paragraph::new(prev).block(panel("Event")).wrap(Wrap { trim: true }), cols[1]);
 }
 
@@ -1460,10 +1591,27 @@ fn draw_sys_logs(f: &mut Frame, app: &App, area: Rect) {
 
 // ── Agents ───────────────────────────────────────────────────────────────────
 fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+
+    let count = |s: &str| app.agent_runs.iter().filter(|r| r.status.as_deref() == Some(s)).count();
+    let running = count("running");
+    f.render_widget(
+        Paragraph::new(stat_bar(&[
+            ("runs", fmt_int(app.agent_runs.len() as i64), PURPLE),
+            ("running", fmt_int(running as i64), if running > 0 { AMBER } else { DIM }),
+            ("completed", fmt_int(count("completed") as i64), GREEN),
+            ("failed", fmt_int((count("failed") + count("error")) as i64), if count("failed") + count("error") > 0 { RED } else { DIM }),
+        ])),
+        rows[0],
+    );
+
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-        .split(area);
+        .split(rows[1]);
 
     let items: Vec<ListItem> = app
         .agent_runs
@@ -1471,20 +1619,17 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|r| {
             ListItem::new(vec![
                 Line::from(vec![
-                    run_dot(r.status.as_deref()),
-                    Span::styled(format!("{:<11}", r.agent.clone().unwrap_or_default()), Style::default().fg(PURPLE).bold()),
-                    Span::styled(truncate(&r.task, 60), Style::default().fg(TEXT)),
+                    run_badge(r.status.as_deref()),
+                    Span::raw(" "),
+                    Span::styled(format!("{:<10}", truncate(&r.agent.clone().unwrap_or_default(), 10)), Style::default().fg(PURPLE).bold()),
+                    Span::styled(truncate(&r.task, 52), Style::default().fg(TEXT)),
                 ]),
-                Line::from(Span::styled(
-                    format!("    {} · {}", run_status(r.status.as_deref()), fmt_date(r.created_at.as_deref())),
-                    Style::default().fg(FAINT),
-                )),
+                Line::from(Span::styled(format!("    {}", fmt_date(r.created_at.as_deref())), Style::default().fg(FAINT))),
             ])
         })
         .collect();
-    let running = app.agent_runs.iter().filter(|r| r.status.as_deref() == Some("running")).count();
     f.render_stateful_widget(
-        list_of(format!("Agent runs ({}) · {} running", app.agent_runs.len(), running), items),
+        list_of(format!("Agent runs ({}) · enter inspect · c cancel", app.agent_runs.len()), items),
         cols[0],
         &mut app.agent_sel.state,
     );
@@ -1680,11 +1825,15 @@ fn draw_help(f: &mut Frame) {
         line("i", "invalidate selected memory"),
         line("m", "recall mode (in Recall sub)"),
         Line::from(""),
-        head("Mind / Systems"),
-        line("a", "propose identity fact (Identity)"),
+        head("Mind"),
+        line("a", "propose identity fact"),
         line("t", "trigger reflection/consolidation/narrative"),
-        line("x", "run scheduled job now (Scheduler)"),
-        line("s", "cycle log source (Logs)"),
+        Line::from(""),
+        head("Systems"),
+        line("c", "Agents: cancel run · Events: cycle category"),
+        line("e / x", "Scheduler: enable·disable / run now"),
+        line("d / n", "Scheduler: delete / new job"),
+        line("s", "Logs: cycle source"),
         Line::from(""),
         head("Global"),
         line("A", "capture episode (ingest)"),
@@ -1746,6 +1895,57 @@ fn hbar(label: &str, v: i64, max: i64, width: usize, col: Color) -> Line<'static
         Span::styled(bar, Style::default().fg(col)),
         Span::styled(format!(" {}", fmt_int(v)), Style::default().fg(DIM)),
     ])
+}
+
+/// A bare scaled bar (no label), for inline use.
+fn bar_str(v: i64, max: i64, width: usize) -> String {
+    let frac = if max > 0 { (v as f64 / max as f64).clamp(0.0, 1.0) } else { 0.0 };
+    let filled = (frac * width as f64).round() as usize;
+    "█".repeat(filled) + &"░".repeat(width.saturating_sub(filled))
+}
+
+/// `[ON]` / `[OFF]` pill for a scheduled job.
+fn enabled_badge(on: bool) -> Span<'static> {
+    if on {
+        Span::styled(" ON  ", Style::default().fg(Color::Black).bg(GREEN).bold())
+    } else {
+        Span::styled(" OFF ", Style::default().fg(TEXT).bg(SEL_BG))
+    }
+}
+
+fn job_status_dot(status: Option<&str>) -> Span<'static> {
+    let col = match status {
+        Some("completed") | Some("success") | Some("ok") => GREEN,
+        Some("failed") | Some("error") => RED,
+        Some("running") => AMBER,
+        _ => FAINT,
+    };
+    Span::styled(" ● ", Style::default().fg(col))
+}
+
+/// Filled status pill for an agent run.
+fn run_badge(status: Option<&str>) -> Span<'static> {
+    let (txt, fg, bg) = match status {
+        Some("running") => ("RUN ", Color::Black, AMBER),
+        Some("completed") | Some("success") => ("DONE", Color::Black, GREEN),
+        Some("failed") | Some("error") => ("FAIL", Color::Black, RED),
+        Some("cancelled") | Some("canceled") => ("CANC", TEXT, SEL_BG),
+        _ => ("·   ", DIM, SEL_BG),
+    };
+    Span::styled(format!(" {txt} "), Style::default().fg(fg).bg(bg).bold())
+}
+
+fn event_cat_color(idx: usize) -> Color {
+    match idx {
+        0 => TEXT,    // All
+        1 => PURPLE,  // Agents
+        2 => CORAL,   // Goals
+        3 => CYAN,    // Knowledge
+        4 => GREEN,   // Memory
+        5 => PERI,    // Cognition
+        6 => AMBER,   // Decisions
+        _ => DIM,     // Other
+    }
 }
 
 /// Render a unicode block sparkline from a series, normalized to its own max.
