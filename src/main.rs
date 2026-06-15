@@ -103,6 +103,7 @@ fn run<B: ratatui::backend::Backend>(
     const TICK: Duration = Duration::from_secs(3);
     let mut last_tick = Instant::now();
     loop {
+        app.frame = app.frame.wrapping_add(1);
         term.draw(|f| ui::draw(f, app))?;
 
         // Drain any worker responses without blocking.

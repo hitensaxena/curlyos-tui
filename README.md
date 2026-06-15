@@ -94,6 +94,32 @@ The header always shows the connected host, scheduler status, job count, and any
 
 ---
 
+## Memory · Recall
+
+Semantic search over your memories with three retrieval modes. Press `/` to focus the
+query field, type, and `enter` to search; `m` cycles the mode (and re-runs if you already
+have results); `enter` on a hit opens the full memory.
+
+| Mode | What it does |
+|------|--------------|
+| **fast** | Quick single-pass vector search — the closest matches. Default. |
+| **deep** | Wider beam, 2-hop graph expansion, more rounds — higher recall, slower. |
+| **divergent** | MMR diversity + recency-inverted + speculative tiers — surfaces older, loosely-related, unexpected memories. |
+
+Recall is fully stateful — focused input, an animated **loading** spinner (queries can take
+10–15s while the embedder warms up), **empty** and **error** states, and ranked results with
+score bars.
+
+| Empty / guide | Typing |
+|---|---|
+| ![Recall — empty](docs/recall-empty.png) | ![Recall — typing](docs/recall-typing.png) |
+
+| Loading | Results |
+|---|---|
+| ![Recall — loading](docs/recall-loading.png) | ![Recall — results](docs/recall-results.png) |
+
+---
+
 ## Keys
 
 ```
@@ -103,7 +129,7 @@ j/k  ↑ ↓         move selection            esc    close overlay / detail
 g / G            top / bottom              ?  q   help / quit
 
 Memory · Browse   / search · v validity · s status · n/p page · i invalidate
-Memory · Recall   / query · m mode (fast/deep/divergent) · enter open memory
+Memory · Recall   / focus query · type + enter to search · m mode · enter open hit
 Mind              a propose fact (Identity) · t trigger reflection/narrative/consolidation
 Systems           x run scheduled job now (Scheduler) · s cycle log source (Logs)
 Global            A capture episode (ingest)

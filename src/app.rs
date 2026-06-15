@@ -117,7 +117,6 @@ pub enum MenuAction {
 
 pub enum FormKind {
     Search,
-    Recall,
     Capture,
     Identity,
     Compose,
@@ -183,6 +182,12 @@ pub struct App {
     pub recall_query: String,
     pub recall_hits: Vec<RecallHit>,
     pub recall_sel: Sel,
+    pub recall_editing: bool,
+    pub recall_loading: bool,
+    pub recall_submitted: bool,
+    pub recall_error: Option<String>,
+    /// monotonic frame counter, drives spinner animation
+    pub frame: u64,
 
     // systems
     pub sys_sub: usize,
@@ -238,6 +243,11 @@ impl App {
             recall_query: String::new(),
             recall_hits: vec![],
             recall_sel: Sel::default(),
+            recall_editing: false,
+            recall_loading: false,
+            recall_submitted: false,
+            recall_error: None,
+            frame: 0,
             sys_sub: 0,
             systems: None,
             scheduler: None,
@@ -335,12 +345,7 @@ impl App {
                     let off = self.epi_offset;
                     self.send(Req::Episodes { limit: 50, offset: off });
                 }
-                _ => {
-                    if !self.recall_query.is_empty() {
-                        let (q, m) = (self.recall_query.clone(), self.recall_mode.clone());
-                        self.send(Req::Recall { query: q, mode: m, k: 20 });
-                    }
-                }
+                _ => self.submit_recall(),
             },
             Tab::Mind => match self.mind_sub {
                 0 => self.send(Req::Identity),
@@ -416,6 +421,8 @@ impl App {
                 self.graph = *g;
             }
             Resp::Recall(v) => {
+                self.recall_loading = false;
+                self.recall_error = None;
                 self.recall_sel.set_len(v.len());
                 self.recall_sel.first();
                 self.recall_hits = v;
@@ -462,7 +469,13 @@ impl App {
                     self.refresh();
                 }
             }
-            Resp::Error(e) => self.status = Some((e, true)),
+            Resp::Error(e) => {
+                if self.recall_loading {
+                    self.recall_loading = false;
+                    self.recall_error = Some(e.clone());
+                }
+                self.status = Some((e, true));
+            }
         }
     }
 
@@ -496,6 +509,12 @@ impl App {
                 return;
             }
             Overlay::None => {}
+        }
+
+        // Inline recall query editor captures all keys while focused.
+        if self.recall_editing {
+            self.handle_recall_input(key);
+            return;
         }
 
         self.status = None;
@@ -543,6 +562,42 @@ impl App {
         let next = (self.cur_sub() as i32 + dir).rem_euclid(n) as usize;
         self.set_sub(next);
         self.refresh();
+    }
+
+    /// Fire a recall request for the current query + mode, entering the
+    /// loading state. No-op (clears results) on an empty query.
+    fn submit_recall(&mut self) {
+        self.recall_editing = false;
+        let q = self.recall_query.trim().to_string();
+        if q.is_empty() {
+            self.recall_submitted = false;
+            self.recall_loading = false;
+            self.recall_error = None;
+            self.recall_hits.clear();
+            self.recall_sel.set_len(0);
+            return;
+        }
+        self.recall_submitted = true;
+        self.recall_loading = true;
+        self.recall_error = None;
+        let m = self.recall_mode.clone();
+        self.send(Req::Recall { query: q, mode: m, k: 20 });
+    }
+
+    /// Inline query editor (active only on Memory · Recall).
+    fn handle_recall_input(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.should_quit = true
+            }
+            KeyCode::Esc => self.recall_editing = false,
+            KeyCode::Enter => self.submit_recall(),
+            KeyCode::Backspace => {
+                self.recall_query.pop();
+            }
+            KeyCode::Char(c) => self.recall_query.push(c),
+            _ => {}
+        }
     }
 
     /// The list selection relevant to the current view.
@@ -660,13 +715,17 @@ impl App {
             },
             // Memory · Recall
             (Tab::Memory, 2) => match key.code {
-                KeyCode::Char('/') => self.open_form(FormKind::Recall),
+                KeyCode::Char('/') | KeyCode::Char('i') => self.recall_editing = true,
                 KeyCode::Char('m') => {
                     self.recall_mode = match self.recall_mode.as_str() {
                         "fast" => "deep".into(),
                         "deep" => "divergent".into(),
                         _ => "fast".into(),
                     };
+                    // re-run with the new mode if a query is present
+                    if self.recall_submitted && !self.recall_query.trim().is_empty() {
+                        self.submit_recall();
+                    }
                 }
                 _ => {}
             },
@@ -751,12 +810,6 @@ impl App {
                     label: "query".into(),
                     value: self.mq.q.clone().unwrap_or_default(),
                 }],
-                active: 0,
-            },
-            FormKind::Recall => Form {
-                kind,
-                title: format!("Semantic recall ({} mode)", self.recall_mode),
-                fields: vec![FormField { label: "query".into(), value: self.recall_query.clone() }],
                 active: 0,
             },
             FormKind::Capture => Form {
@@ -898,13 +951,6 @@ impl App {
                 self.mq.q = if q.is_empty() { None } else { Some(q) };
                 self.mq.offset = 0;
                 self.refresh();
-            }
-            FormKind::Recall => {
-                self.recall_query = form.fields[0].value.trim().to_string();
-                if !self.recall_query.is_empty() {
-                    let (q, m) = (self.recall_query.clone(), self.recall_mode.clone());
-                    self.send(Req::Recall { query: q, mode: m, k: 20 });
-                }
             }
             FormKind::Capture => {
                 let c = form.fields[0].value.trim().to_string();

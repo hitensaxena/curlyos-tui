@@ -129,10 +129,11 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let hints: &str = match (app.tab, app.cur_sub()) {
+        _ if app.recall_editing => "type your query · enter search · esc cancel",
         (Tab::Home, _) => "1-5 spaces · h/l sub-view · r refresh",
         (Tab::Memory, 0) => "enter detail · / search · v validity · s status · n/p page · i invalidate",
         (Tab::Memory, 1) => "enter detail · n/p page",
-        (Tab::Memory, _) => "/ query · m mode · enter open memory",
+        (Tab::Memory, _) => "/ edit query · m mode · enter open memory",
         (Tab::Mind, 0) => "a propose fact · t trigger job",
         (Tab::Mind, _) => "↑↓ browse · t trigger reflection/narrative/consolidation",
         (Tab::Graph, _) => "↑↓ neighbors update",
@@ -887,50 +888,159 @@ fn rel_line(rel: &Option<String>, arrow: &str, other: &str) -> Line<'static> {
 }
 
 // ── Recall ───────────────────────────────────────────────────────────────────
+const SPIN: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+fn recall_mode_note(mode: &str) -> &'static str {
+    match mode {
+        "deep" => "wider beam · 2-hop graph · more rounds — higher recall, slower",
+        "divergent" => "MMR diversity · older + speculative tiers — unexpected connections",
+        _ => "quick single-pass vector search — closest matches",
+    }
+}
+
 fn draw_recall(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(8)])
+        .constraints([
+            Constraint::Length(3), // query field
+            Constraint::Length(4), // mode selector + note
+            Constraint::Min(0),    // results
+            Constraint::Length(7), // preview
+        ])
         .split(area);
 
-    let mut bar = vec![Span::styled(" mode ", Style::default().fg(DIM))];
+    // ── query field ──────────────────────────────────────────────────────
+    let editing = app.recall_editing;
+    let qcol = if editing { MINT } else { FAINT };
+    let qline = if app.recall_query.is_empty() && !editing {
+        Span::styled("press / to type a query, enter to search", Style::default().fg(DIM))
+    } else if editing {
+        Span::styled(format!("{}▏", app.recall_query), Style::default().fg(TEXT))
+    } else {
+        Span::styled(app.recall_query.clone(), Style::default().fg(TEXT))
+    };
+    let qtitle = if editing { "Query — typing… (enter search · esc cancel)" } else { "Query — / to edit" };
+    f.render_widget(
+        Paragraph::new(Line::from(qline)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(qcol))
+                .title(Span::styled(format!(" {qtitle} "), Style::default().fg(qcol).bold())),
+        ),
+        rows[0],
+    );
+
+    // ── mode selector + note ─────────────────────────────────────────────
+    let mut seg = vec![Span::raw(" ")];
     for m in ["fast", "deep", "divergent"] {
         let active = app.recall_mode == m;
-        let style = if active { Style::default().fg(Color::Black).bg(GREEN).bold() } else { Style::default().fg(DIM) };
-        bar.push(Span::styled(format!(" {m} "), style));
-        bar.push(Span::raw(" "));
+        let style = if active {
+            Style::default().fg(Color::Black).bg(GREEN).bold()
+        } else {
+            Style::default().fg(DIM)
+        };
+        seg.push(Span::styled(format!(" {m} "), style));
+        seg.push(Span::raw(" "));
     }
-    bar.push(Span::styled("  query ", Style::default().fg(DIM)));
-    bar.push(Span::styled(
-        if app.recall_query.is_empty() { "(press /)".into() } else { app.recall_query.clone() },
-        Style::default().fg(AMBER).bold(),
-    ));
-    f.render_widget(Paragraph::new(Line::from(bar)), rows[0]);
+    let mode_block = Paragraph::new(vec![
+        Line::from(seg),
+        Line::from(Span::styled(format!(" {}", recall_mode_note(&app.recall_mode)), Style::default().fg(DIM))),
+    ])
+    .block(panel("Mode — m to switch"));
+    f.render_widget(mode_block, rows[1]);
 
-    let items: Vec<ListItem> = app
-        .recall_hits
-        .iter()
-        .map(|h| {
-            let filled = (h.score.clamp(0.0, 1.0) * 5.0).round() as usize;
-            let sb: String = "▰".repeat(filled) + &"▱".repeat(5usize.saturating_sub(filled));
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{sb} "), Style::default().fg(score_color(h.score))),
-                Span::styled(format!("{:.3} ", h.score), Style::default().fg(score_color(h.score)).bold()),
-                status_badge(h.epistemic_status.as_deref()),
-                Span::raw(" "),
-                Span::styled(truncate(&h.text, 150), Style::default().fg(TEXT)),
-            ]))
-        })
-        .collect();
-    f.render_stateful_widget(list_of(format!("Recall hits ({})", app.recall_hits.len()), items), rows[1], &mut app.recall_sel.state);
+    // ── results: loading / error / empty / list ──────────────────────────
+    if app.recall_loading {
+        let sp = SPIN[(app.frame as usize / 2) % SPIN.len()];
+        let body = Text::from(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  {sp}  searching memories — {} mode…", app.recall_mode),
+                Style::default().fg(MINT).bold(),
+            )),
+        ]);
+        f.render_widget(Paragraph::new(body).block(panel("Recall")), rows[2]);
+    } else if let Some(err) = &app.recall_error {
+        let body = Text::from(vec![
+            Line::from(Span::styled("  ✗ recall failed", Style::default().fg(RED).bold())),
+            Line::from(Span::styled(format!("  {}", truncate(err, 160)), Style::default().fg(RED))),
+            Line::from(""),
+            Line::from(Span::styled("  press r to retry, or / to edit the query", Style::default().fg(DIM))),
+        ]);
+        f.render_widget(Paragraph::new(body).block(panel("Recall")), rows[2]);
+    } else if !app.recall_submitted {
+        let body = Text::from(vec![
+            Line::from(Span::styled("  Semantic recall over your memories.", Style::default().fg(TEXT))),
+            Line::from(""),
+            mode_help_line("fast", "quick single-pass vector search — closest matches"),
+            mode_help_line("deep", "wider beam, 2-hop graph, more rounds — higher recall"),
+            mode_help_line("divergent", "MMR diversity + older/speculative — unexpected links"),
+            Line::from(""),
+            Line::from(Span::styled("  Press / to type a query · m to switch mode · enter to search.", Style::default().fg(DIM))),
+        ]);
+        f.render_widget(Paragraph::new(body).block(panel("Recall")), rows[2]);
+    } else if app.recall_hits.is_empty() {
+        let body = Text::from(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  no memories matched “{}”", truncate(&app.recall_query, 80)),
+                Style::default().fg(AMBER).bold(),
+            )),
+            Line::from(Span::styled(
+                "  try rephrasing, or switch to deep / divergent mode (m)",
+                Style::default().fg(DIM),
+            )),
+        ]);
+        f.render_widget(Paragraph::new(body).block(panel("Recall · 0 hits")), rows[2]);
+    } else {
+        let items: Vec<ListItem> = app
+            .recall_hits
+            .iter()
+            .map(|h| {
+                let filled = (h.score.clamp(0.0, 1.0) * 5.0).round() as usize;
+                let sb: String = "▰".repeat(filled) + &"▱".repeat(5usize.saturating_sub(filled));
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{sb} "), Style::default().fg(score_color(h.score))),
+                    Span::styled(format!("{:.3} ", h.score), Style::default().fg(score_color(h.score)).bold()),
+                    status_badge(h.epistemic_status.as_deref()),
+                    Span::raw(" "),
+                    Span::styled(truncate(&h.text, 150), Style::default().fg(TEXT)),
+                ]))
+            })
+            .collect();
+        f.render_stateful_widget(
+            list_of(format!("Recall hits ({}) · enter to open", app.recall_hits.len()), items),
+            rows[2],
+            &mut app.recall_sel.state,
+        );
+    }
 
+    // ── preview ──────────────────────────────────────────────────────────
     let prev = app
         .recall_sel
         .selected()
         .and_then(|i| app.recall_hits.get(i))
-        .map(|h| Text::from(h.text.clone()))
-        .unwrap_or_else(|| Text::from("run a recall with /"));
-    f.render_widget(Paragraph::new(prev).block(panel("Preview")).wrap(Wrap { trim: true }), rows[2]);
+        .filter(|_| !app.recall_hits.is_empty())
+        .map(|h| {
+            Text::from(vec![
+                Line::from(Span::styled(
+                    format!("score {:.3} · {}", h.score, h.epistemic_status.clone().unwrap_or_default()),
+                    Style::default().fg(DIM),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(h.text.clone(), Style::default().fg(TEXT))),
+            ])
+        })
+        .unwrap_or_else(|| Text::from(Span::styled("select a hit to preview", Style::default().fg(DIM))));
+    f.render_widget(Paragraph::new(prev).block(panel("Preview")).wrap(Wrap { trim: true }), rows[3]);
+}
+
+fn mode_help_line(mode: &str, note: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {mode:<10}"), Style::default().fg(GREEN).bold()),
+        Span::styled(note.to_string(), Style::default().fg(DIM)),
+    ])
 }
 
 fn score_color(s: f64) -> Color {
