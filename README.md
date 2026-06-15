@@ -73,7 +73,7 @@ gauges, and sparklines where they add insight.
 |---|-------|-----------|
 | 1 | **Home** | Live system monitor — KPI cards, event sparkline + ticker, running-agents / scheduler / services, derived signals, knowledge + composition bar charts |
 | 2 | **Memory** | **Browse** (FTS search, validity/status filter chips, paginate, invalidate) · **Episodes** (timeline + derived-memory detail, extraction ratio) · **Recall** (semantic fast/deep/divergent, score bars) |
-| 3 | **Mind** | **Identity** (confidence bars, propose) · **Principles** · **Narrative** (chapters) · **Attention** (cognitive-load gauge, focus/neglected/breadth) · **Reflections** |
+| 3 | **Mind** | A self-model monitor — **Overview** (who I am · how I think · what I'm focused on · current chapter · latest insight) · **Self** (identity facts + principles) · **Focus** (mental-load gauge + focus bars) · **Story** (current chapter + timeline) · **Insights** (reflections) |
 | 4 | **Graph** | Knowledge entities by degree + neighbor explorer; entities/edges/density/types header |
 | 5 | **Systems** | **Overview** (infra, engines 24h/7d, scheduler) · **Agents** (runs + live step inspector) · **Scheduler** (cron + user jobs, run-now) · **Events** (feed + JSON inspector) · **Logs** (per-source tail) |
 
@@ -83,8 +83,11 @@ The header always shows the connected host, scheduler status, job count, and any
 ### Memory · Browse
 ![Memory — Browse](docs/memory.png)
 
-### Mind · Attention
-![Mind — Attention](docs/mind.png)
+### Mind · Overview — a self-model monitor
+![Mind — Overview](docs/mind.png)
+
+### Mind · Focus
+![Mind — Focus](docs/mind-focus.png)
 
 ### Systems · Agents
 ![Systems — Agents](docs/systems.png)

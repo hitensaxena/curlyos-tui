@@ -134,7 +134,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         (Tab::Memory, 0) => "enter detail · / search · v validity · s status · n/p page · i invalidate",
         (Tab::Memory, 1) => "enter detail · n/p page",
         (Tab::Memory, _) => "/ edit query · m mode · enter open memory",
-        (Tab::Mind, 0) => "a propose fact · t trigger job",
+        (Tab::Mind, 0) => "h/l explore · a propose identity · t trigger cognition job",
+        (Tab::Mind, 1) => "↑↓ browse identity · a propose · t trigger",
         (Tab::Mind, _) => "↑↓ browse · t trigger reflection/narrative/consolidation",
         (Tab::Graph, _) => "↑↓ neighbors update",
         (Tab::Systems, 1) => "enter inspect run · esc close · auto-refreshing",
@@ -558,15 +559,166 @@ fn draw_mind(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = subsplit(area);
     f.render_widget(Paragraph::new(subtabs(&MIND_SUBS, app.mind_sub)), rows[0]);
     match app.mind_sub {
-        0 => draw_identity(f, app, rows[1]),
-        1 => draw_principles(f, app, rows[1]),
-        2 => draw_narrative(f, app, rows[1]),
-        3 => draw_attention(f, app, rows[1]),
-        _ => draw_reflections(f, app, rows[1]),
+        0 => draw_mind_overview(f, app, rows[1]),
+        1 => draw_self(f, app, rows[1]),
+        2 => draw_focus(f, app, rows[1]),
+        3 => draw_story(f, app, rows[1]),
+        _ => draw_insights(f, app, rows[1]),
     }
 }
 
-fn draw_identity(f: &mut Frame, app: &mut App, area: Rect) {
+/// Principles sorted canonical-first (beliefs before hypotheses).
+fn principles_ranked(app: &App) -> Vec<&Principle> {
+    let rank = |s: Option<&str>| match s {
+        Some("canonical") => 0,
+        Some("belief") => 1,
+        _ => 2,
+    };
+    let mut v: Vec<&Principle> = app.principles.iter().collect();
+    v.sort_by_key(|p| rank(p.epistemic_status.as_deref()));
+    v
+}
+
+/// The chapter the user is living now: the open one (no end_date), else newest.
+fn current_chapter(app: &App) -> Option<&Chapter> {
+    app.chapters
+        .iter()
+        .find(|c| c.end_date.is_none())
+        .or_else(|| app.chapters.first())
+}
+
+// ── Mind · Overview (the monitor) ────────────────────────────────────────────
+fn draw_mind_overview(f: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(6), Constraint::Length(13), Constraint::Min(0)])
+        .split(area);
+
+    // KPI cards
+    let load = app.attention.as_ref().map(|a| a.cognitive_load.score).unwrap_or(0.0);
+    let findings: usize = app.reports.iter().map(|r| r.findings.len()).sum();
+    let cards: [(&str, String, Color); 5] = [
+        ("MENTAL LOAD", format!("{:.0}%", load * 100.0), load_color(load)),
+        ("IDENTITY", fmt_int(app.identity.len() as i64), PERI),
+        ("PRINCIPLES", fmt_int(app.principles.len() as i64), PURPLE),
+        ("CHAPTERS", fmt_int(app.chapters.len() as i64), CORAL),
+        ("INSIGHTS", fmt_int(findings as i64), GREEN),
+    ];
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Ratio(1, 5); 5])
+        .split(rows[0]);
+    for (i, (label, val, col)) in cards.iter().enumerate() {
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(*label, Style::default().fg(DIM))),
+                Line::from(Span::styled(val.clone(), Style::default().fg(*col).bold())),
+            ])
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(FAINT))),
+            cols[i],
+        );
+    }
+
+    // mid row: who I am · how I think · focus now
+    let mid = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(34), Constraint::Percentage(33), Constraint::Percentage(33)])
+        .split(rows[1]);
+
+    let who: Vec<Line> = if app.identity.is_empty() {
+        vec![Line::from(Span::styled("  loading…", Style::default().fg(DIM)))]
+    } else {
+        app.identity
+            .iter()
+            .take(8)
+            .map(|fct| {
+                Line::from(vec![
+                    Span::styled(conf_dots(fct.confidence), Style::default().fg(conf_color(fct.confidence))),
+                    Span::styled(format!(" {}", truncate(&fct.predicate, 16)), Style::default().fg(PERI).bold()),
+                    Span::styled(format!("  {}", truncate(&fct.object, 26)), Style::default().fg(TEXT)),
+                ])
+            })
+            .collect()
+    };
+    f.render_widget(Paragraph::new(who).block(panel("Who I am")).wrap(Wrap { trim: true }), mid[0]);
+
+    let how: Vec<Line> = if app.principles.is_empty() {
+        vec![Line::from(Span::styled("  loading…", Style::default().fg(DIM)))]
+    } else {
+        principles_ranked(app)
+            .iter()
+            .take(7)
+            .map(|p| {
+                Line::from(vec![
+                    Span::styled("◆ ", Style::default().fg(PURPLE)),
+                    Span::styled(truncate(&p.statement, 40), Style::default().fg(TEXT)),
+                ])
+            })
+            .collect()
+    };
+    f.render_widget(Paragraph::new(how).block(panel("How I think")).wrap(Wrap { trim: true }), mid[1]);
+
+    let mut focus: Vec<Line> = vec![];
+    if let Some(a) = &app.attention {
+        focus.push(Line::from(vec![
+            Span::styled("  load ", Style::default().fg(DIM)),
+            Span::styled(load_bar(a.cognitive_load.score, 10), Style::default().fg(load_color(a.cognitive_load.score))),
+            Span::styled(format!(" {:.0}%", a.cognitive_load.score * 100.0), Style::default().fg(load_color(a.cognitive_load.score)).bold()),
+        ]));
+        focus.push(Line::from(""));
+        for x in a.focus_areas.iter().take(6) {
+            focus.push(Line::from(vec![
+                Span::styled(format!("  {:>3} ", x.weight), Style::default().fg(GREEN).bold()),
+                Span::styled(truncate(&x.name, 22), Style::default().fg(TEXT)),
+            ]));
+        }
+    } else {
+        focus.push(Line::from(Span::styled("  loading…", Style::default().fg(DIM))));
+    }
+    f.render_widget(Paragraph::new(focus).block(panel("What I'm on")), mid[2]);
+
+    // bottom: current chapter · latest insight
+    let bottom = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(rows[2]);
+
+    let chap: Vec<Line> = match current_chapter(app) {
+        Some(c) => vec![
+            Line::from(Span::styled(c.title.clone(), Style::default().fg(CORAL).bold())),
+            Line::from(Span::styled(
+                format!("since {} · {}", fmt_date(c.start_date.as_deref()), if c.end_date.is_none() { "ongoing" } else { "closed" }),
+                Style::default().fg(FAINT),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(c.summary.clone(), Style::default().fg(TEXT))),
+        ],
+        None => vec![Line::from(Span::styled("loading…", Style::default().fg(DIM)))],
+    };
+    f.render_widget(Paragraph::new(chap).block(panel("Where I am — current chapter")).wrap(Wrap { trim: true }), bottom[0]);
+
+    let insight: Vec<Line> = match app.reports.first() {
+        Some(r) => {
+            let mut v = vec![Line::from(Span::styled(
+                format!("{} · {}", r.report_type.clone().unwrap_or_default(), fmt_date(r.time_window_end.as_deref())),
+                Style::default().fg(MINT),
+            ))];
+            for fnd in r.findings.iter().take(4) {
+                v.push(Line::from(vec![
+                    Span::styled("• ", Style::default().fg(GREEN)),
+                    Span::styled(truncate(&fnd.statement, 90), Style::default().fg(TEXT)),
+                ]));
+            }
+            v
+        }
+        None => vec![Line::from(Span::styled("no reflections yet · press t to run one", Style::default().fg(DIM)))],
+    };
+    f.render_widget(Paragraph::new(insight).block(panel("What I've realized")).wrap(Wrap { trim: true }), bottom[1]);
+}
+
+// ── Mind · Self (identity + principles) ──────────────────────────────────────
+fn draw_self(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
@@ -577,16 +729,20 @@ fn draw_identity(f: &mut Frame, app: &mut App, area: Rect) {
         app.identity.iter().map(|f| f.confidence).sum::<f64>() / app.identity.len() as f64
     };
     let canon = app.identity.iter().filter(|f| f.epistemic_status.as_deref() == Some("canonical")).count();
-    let hyp = app.identity.iter().filter(|f| f.epistemic_status.as_deref() == Some("hypothesis")).count();
     f.render_widget(
         Paragraph::new(stat_bar(&[
-            ("facts", fmt_int(app.identity.len() as i64), PERI),
+            ("identity facts", fmt_int(app.identity.len() as i64), PERI),
             ("canonical", fmt_int(canon as i64), MINT),
-            ("hypothesis", fmt_int(hyp as i64), AMBER),
             ("avg confidence", format!("{:.0}%", avg * 100.0), GREEN),
+            ("principles", fmt_int(app.principles.len() as i64), PURPLE),
         ])),
         rows[0],
     );
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(rows[1]);
 
     let items: Vec<ListItem> = app
         .identity
@@ -596,75 +752,153 @@ fn draw_identity(f: &mut Frame, app: &mut App, area: Rect) {
             let bar: String = "▰".repeat(filled) + &"▱".repeat(6usize.saturating_sub(filled));
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{bar} "), Style::default().fg(conf_color(fct.confidence))),
-                Span::styled(format!("{:<20}", truncate(&fct.predicate, 20)), Style::default().fg(PERI).bold()),
-                Span::styled(truncate(&fct.object, 80), Style::default().fg(TEXT)),
-                Span::styled(format!("  ({})", fct.epistemic_status.clone().unwrap_or_default()), Style::default().fg(FAINT)),
+                Span::styled(format!("{:<18}", truncate(&fct.predicate, 18)), Style::default().fg(PERI).bold()),
+                Span::styled(truncate(&fct.object, 60), Style::default().fg(TEXT)),
             ]))
         })
         .collect();
     f.render_stateful_widget(
-        list_of(format!("Identity facts ({})  ·  a: propose", app.identity.len()), items),
-        rows[1],
+        list_of(format!("Who I am — identity ({}) · a propose", app.identity.len()), items),
+        cols[0],
         &mut app.id_sel.state,
     );
-}
 
-fn draw_principles(f: &mut Frame, app: &mut App, area: Rect) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-        .split(area);
-    let items: Vec<ListItem> = app
-        .principles
+    let how: Vec<Line> = principles_ranked(app)
         .iter()
-        .map(|p| {
-            ListItem::new(Line::from(vec![
-                Span::styled("◆ ", Style::default().fg(PURPLE)),
-                Span::styled(truncate(&p.statement, 80), Style::default().fg(TEXT)),
-            ]))
+        .flat_map(|p| {
+            vec![
+                Line::from(vec![
+                    Span::styled("◆ ", Style::default().fg(PURPLE)),
+                    Span::styled(p.statement.clone(), Style::default().fg(TEXT)),
+                ]),
+                Line::from(Span::styled(
+                    format!("    {} · {}", p.domain.clone().unwrap_or_default(), p.epistemic_status.clone().unwrap_or_default()),
+                    Style::default().fg(FAINT),
+                )),
+            ]
         })
         .collect();
-    f.render_stateful_widget(list_of(format!("Principles ({}) · t: distill", app.principles.len()), items), cols[0], &mut app.prin_sel.state);
-    let prev = app
-        .prin_sel
-        .selected()
-        .and_then(|i| app.principles.get(i))
-        .map(|p| {
-            Text::from(vec![
-                Line::from(Span::styled(p.statement.clone(), Style::default().fg(TEXT))),
-                Line::from(""),
-                kv("domain", p.domain.as_deref().unwrap_or("—")),
-                kv("status", p.epistemic_status.as_deref().unwrap_or("—")),
-            ])
-        })
-        .unwrap_or_else(|| Text::from("no selection"));
-    f.render_widget(Paragraph::new(prev).block(panel("Principle")).wrap(Wrap { trim: true }), cols[1]);
+    f.render_widget(
+        Paragraph::new(how).block(panel(&format!("How I think — principles ({})", app.principles.len()))).wrap(Wrap { trim: true }),
+        cols[1],
+    );
 }
 
-fn draw_narrative(f: &mut Frame, app: &mut App, area: Rect) {
+// ── Mind · Focus (attention, rebuilt) ────────────────────────────────────────
+fn draw_focus(f: &mut Frame, app: &App, area: Rect) {
+    let Some(a) = &app.attention else {
+        f.render_widget(Paragraph::new("press r to load attention").block(panel("Focus")), area);
+        return;
+    };
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
+
+    let load = a.cognitive_load.score.clamp(0.0, 1.0);
     f.render_widget(
-        Paragraph::new(stat_bar(&[("chapters", fmt_int(app.chapters.len() as i64), CORAL), ("t", "compose / generate".into(), DIM)])),
+        Gauge::default()
+            .block(panel("Mental load — how much my mind is juggling"))
+            .gauge_style(Style::default().fg(load_color(load)))
+            .ratio(load)
+            .label(format!(
+                "{:.0}%   density {:.2} · topic-switching {:.2} · {} episodes / {}d",
+                load * 100.0,
+                a.cognitive_load.breakdown.density,
+                a.cognitive_load.breakdown.topic_switching,
+                a.cognitive_load.breakdown.episode_count,
+                a.cognitive_load.breakdown.window_days
+            )),
         rows[0],
     );
+
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(rows[1]);
+
+    // focus areas as a bar chart
+    let fmax = a.focus_areas.iter().map(|x| x.weight).max().unwrap_or(1).max(1);
+    let focus: Vec<Line> = a
+        .focus_areas
+        .iter()
+        .take(14)
+        .map(|x| hbar(&x.name, x.weight, fmax, 16, GREEN))
+        .collect();
+    f.render_widget(Paragraph::new(focus).block(panel("On my mind — top focus")), cols[0]);
+
+    // right column: neglected + breadth
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(cols[1]);
+    let neglect: Vec<Line> = a
+        .neglected
+        .iter()
+        .take(8)
+        .map(|x| {
+            Line::from(vec![
+                Span::styled(format!("  {:>3} ", x.weight), Style::default().fg(AMBER).bold()),
+                Span::styled(truncate(&x.name, 24), Style::default().fg(TEXT)),
+                Span::styled(format!("  {}", x.label.clone().unwrap_or_default()), Style::default().fg(FAINT)),
+            ])
+        })
+        .collect();
+    f.render_widget(Paragraph::new(neglect).block(panel("Fading — neglected")), right[0]);
+
+    let breadth = vec![
+        kv("entities tracked", &fmt_int(a.breadth.total_entities)),
+        kv("distinct types", &fmt_int(a.breadth.distinct_types)),
+        Line::from(vec![
+            Span::styled("  concentration  ", Style::default().fg(DIM)),
+            Span::styled(load_bar(a.breadth.concentration, 10), Style::default().fg(CYAN)),
+            Span::styled(format!(" {:.2}", a.breadth.concentration), Style::default().fg(TEXT)),
+        ]),
+        Line::from(Span::styled("  0 = broad · 1 = narrow", Style::default().fg(FAINT))),
+    ];
+    f.render_widget(Paragraph::new(breadth).block(panel("Breadth of mind")).wrap(Wrap { trim: true }), right[1]);
+}
+
+// ── Mind · Story (narrative) ─────────────────────────────────────────────────
+fn draw_story(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(7), Constraint::Min(0)])
+        .split(area);
+
+    // current chapter hero
+    let hero: Vec<Line> = match current_chapter(app) {
+        Some(c) => vec![
+            Line::from(vec![
+                Span::styled("▶ ", Style::default().fg(CORAL).bold()),
+                Span::styled(c.title.clone(), Style::default().fg(CORAL).bold()),
+                Span::styled(format!("   since {}", fmt_date(c.start_date.as_deref())), Style::default().fg(FAINT)),
+            ]),
+            Line::from(Span::styled(c.summary.clone(), Style::default().fg(TEXT))),
+        ],
+        None => vec![Line::from(Span::styled("loading…", Style::default().fg(DIM)))],
+    };
+    f.render_widget(
+        Paragraph::new(hero).block(panel("Current chapter · t to compose / generate")).wrap(Wrap { trim: true }),
+        rows[0],
+    );
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
         .split(rows[1]);
     let items: Vec<ListItem> = app
         .chapters
         .iter()
         .map(|c| {
-            ListItem::new(vec![
-                Line::from(Span::styled(truncate(&c.title, 46), Style::default().fg(CORAL).bold())),
-                Line::from(Span::styled(format!("   {}", fmt_date(c.start_date.as_deref())), Style::default().fg(FAINT))),
-            ])
+            let marker = if c.end_date.is_none() { "● " } else { "○ " };
+            ListItem::new(Line::from(vec![
+                Span::styled(marker, Style::default().fg(if c.end_date.is_none() { CORAL } else { FAINT })),
+                Span::styled(truncate(&c.title, 40), Style::default().fg(TEXT)),
+            ]))
         })
         .collect();
-    f.render_stateful_widget(list_of(format!("Chapters ({})", app.chapters.len()), items), cols[0], &mut app.chap_sel.state);
+    f.render_stateful_widget(list_of(format!("Timeline ({} chapters)", app.chapters.len()), items), cols[0], &mut app.chap_sel.state);
     let prev = app
         .chap_sel
         .selected()
@@ -680,11 +914,12 @@ fn draw_narrative(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::from(Span::styled(c.summary.clone(), Style::default().fg(TEXT))),
             ])
         })
-        .unwrap_or_else(|| Text::from("no selection"));
+        .unwrap_or_else(|| Text::from("select a chapter"));
     f.render_widget(Paragraph::new(prev).block(panel("Chapter")).wrap(Wrap { trim: true }), cols[1]);
 }
 
-fn draw_reflections(f: &mut Frame, app: &mut App, area: Rect) {
+// ── Mind · Insights (reflections) ────────────────────────────────────────────
+fn draw_insights(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
@@ -694,22 +929,26 @@ fn draw_reflections(f: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new(stat_bar(&[
             ("reports", fmt_int(app.reports.len() as i64), PERI),
             ("findings", fmt_int(findings as i64), GREEN),
+            ("latest", fmt_date(app.reports.first().and_then(|r| r.time_window_end.as_deref())), MINT),
             ("t", "weekly / monthly".into(), DIM),
         ])),
         rows[0],
     );
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([Constraint::Percentage(34), Constraint::Percentage(66)])
         .split(rows[1]);
     let items: Vec<ListItem> = app
         .reports
         .iter()
         .map(|r| {
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{:<8}", r.report_type.clone().unwrap_or_default()), Style::default().fg(PERI).bold()),
-                Span::styled(format!("{} findings", r.findings.len()), Style::default().fg(GREEN)),
-            ]))
+            ListItem::new(vec![
+                Line::from(Span::styled(r.report_type.clone().unwrap_or_default(), Style::default().fg(PERI).bold())),
+                Line::from(Span::styled(
+                    format!("  {} · {} findings", fmt_date(r.time_window_end.as_deref()), r.findings.len()),
+                    Style::default().fg(FAINT),
+                )),
+            ])
         })
         .collect();
     f.render_stateful_widget(list_of(format!("Reflections ({})", app.reports.len()), items), cols[0], &mut app.rep_sel.state);
@@ -741,8 +980,8 @@ fn draw_reflections(f: &mut Frame, app: &mut App, area: Rect) {
             }
             Text::from(lines)
         })
-        .unwrap_or_else(|| Text::from("no selection"));
-    f.render_widget(Paragraph::new(prev).block(panel("Findings")).wrap(Wrap { trim: true }), cols[1]);
+        .unwrap_or_else(|| Text::from("select a report"));
+    f.render_widget(Paragraph::new(prev).block(panel("What I noticed")).wrap(Wrap { trim: true }), cols[1]);
 }
 
 fn conf_color(c: f64) -> Color {
@@ -755,59 +994,17 @@ fn conf_color(c: f64) -> Color {
     }
 }
 
-fn draw_attention(f: &mut Frame, app: &App, area: Rect) {
-    let Some(a) = &app.attention else {
-        f.render_widget(Paragraph::new("press r to load attention").block(panel("Attention")), area);
-        return;
-    };
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
-
-    let load = a.cognitive_load.score.clamp(0.0, 1.0);
-    let g = Gauge::default()
-        .block(panel("Cognitive load"))
-        .gauge_style(Style::default().fg(if load > 0.8 { CORAL } else { MINT }))
-        .ratio(load)
-        .label(format!(
-            "{:.0}%  density {:.2} · switching {:.2} · {} eps/{}d",
-            load * 100.0,
-            a.cognitive_load.breakdown.density,
-            a.cognitive_load.breakdown.topic_switching,
-            a.cognitive_load.breakdown.episode_count,
-            a.cognitive_load.breakdown.window_days
-        ));
-    f.render_widget(g, rows[0]);
-
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(34), Constraint::Percentage(33), Constraint::Percentage(33)])
-        .split(rows[1]);
-    let focus: Vec<Line> = a.focus_areas.iter().take(15).map(|x| weight_line(x, MINT)).collect();
-    f.render_widget(Paragraph::new(focus).block(panel("Focus areas")), cols[0]);
-    let neglect: Vec<Line> = a.neglected.iter().take(15).map(|x| weight_line(x, AMBER)).collect();
-    f.render_widget(Paragraph::new(neglect).block(panel("Neglected")), cols[1]);
-    let mut breadth: Vec<Line> = vec![
-        kv("total entities", &fmt_int(a.breadth.total_entities)),
-        kv("distinct types", &fmt_int(a.breadth.distinct_types)),
-        kv("concentration", &format!("{:.2}", a.breadth.concentration)),
-        Line::from(""),
-    ];
-    for (k, v) in &a.breadth.by_type {
-        breadth.push(kv(k, &fmt_int(*v)));
-    }
-    f.render_widget(Paragraph::new(breadth).block(panel("Breadth")), cols[2]);
+/// A compact 5-dot confidence indicator.
+fn conf_dots(c: f64) -> String {
+    let filled = (c.clamp(0.0, 1.0) * 5.0).round() as usize;
+    "●".repeat(filled) + &"·".repeat(5usize.saturating_sub(filled))
 }
 
-fn weight_line(x: &FocusArea, col: Color) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{:>4} ", x.weight), Style::default().fg(col).bold()),
-        Span::styled(truncate(&x.name, 22), Style::default().fg(TEXT)),
-        Span::styled(format!(" · {}", x.label.clone().unwrap_or_default()), Style::default().fg(FAINT)),
-    ])
+/// A small inline load bar (█/░), used in dashboards.
+fn load_bar(v: f64, width: usize) -> String {
+    let filled = (v.clamp(0.0, 1.0) * width as f64).round() as usize;
+    "█".repeat(filled) + &"░".repeat(width.saturating_sub(filled))
 }
-
 // ── Graph ────────────────────────────────────────────────────────────────────
 fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()

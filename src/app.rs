@@ -8,7 +8,7 @@ use std::sync::mpsc::Sender;
 
 pub const TABS: [&str; 5] = ["Home", "Memory", "Mind", "Graph", "Systems"];
 pub const MEM_SUBS: [&str; 3] = ["Browse", "Episodes", "Recall"];
-pub const MIND_SUBS: [&str; 5] = ["Identity", "Principles", "Narrative", "Attention", "Reflections"];
+pub const MIND_SUBS: [&str; 5] = ["Overview", "Self", "Focus", "Story", "Insights"];
 pub const SYS_SUBS: [&str; 5] = ["Overview", "Agents", "Scheduler", "Events", "Logs"];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -348,10 +348,20 @@ impl App {
                 _ => self.submit_recall(),
             },
             Tab::Mind => match self.mind_sub {
-                0 => self.send(Req::Identity),
-                1 => self.send(Req::Principles),
-                2 => self.send(Req::Narrative),
-                3 => self.send(Req::Attention),
+                // Overview composes every source into one monitor.
+                0 => {
+                    self.send(Req::Identity);
+                    self.send(Req::Principles);
+                    self.send(Req::Attention);
+                    self.send(Req::Narrative);
+                    self.send(Req::Reflections);
+                }
+                1 => {
+                    self.send(Req::Identity);
+                    self.send(Req::Principles);
+                }
+                2 => self.send(Req::Attention),
+                3 => self.send(Req::Narrative),
                 _ => self.send(Req::Reflections),
             },
             Tab::Graph => self.send(Req::Graph(60)),
@@ -609,11 +619,10 @@ impl App {
                 _ => &mut self.recall_sel,
             },
             Tab::Mind => match self.mind_sub {
-                0 => &mut self.id_sel,
-                1 => &mut self.prin_sel,
-                2 => &mut self.chap_sel,
-                4 => &mut self.rep_sel,
-                _ => &mut self.node_sel, // attention has no list
+                1 => &mut self.id_sel,   // Self → identity list
+                3 => &mut self.chap_sel, // Story → chapters
+                4 => &mut self.rep_sel,  // Insights → reports
+                _ => &mut self.node_sel, // Overview / Focus have no list
             },
             Tab::Graph => &mut self.node_sel,
             Tab::Systems => match self.sys_sub {
@@ -729,9 +738,9 @@ impl App {
                 }
                 _ => {}
             },
-            // Mind (cognition triggers available throughout; propose only on Identity)
+            // Mind (cognition triggers available throughout; propose on Overview/Self)
             (Tab::Mind, sub) => match key.code {
-                KeyCode::Char('a') if sub == 0 => self.open_form(FormKind::Identity),
+                KeyCode::Char('a') if sub == 0 || sub == 1 => self.open_form(FormKind::Identity),
                 KeyCode::Char('t') => self.open_cognition_menu(),
                 _ => {}
             },
