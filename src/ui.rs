@@ -130,6 +130,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     }
     let hints: &str = match (app.tab, app.cur_sub()) {
         _ if app.recall_editing => "type your query · enter search · esc cancel",
+        _ if app.graph_editing => "type to filter entities · enter apply · esc clear",
         (Tab::Home, _) => "1-5 spaces · h/l sub-view · r refresh",
         (Tab::Memory, 0) => "enter detail · / search · v validity · s status · n/p page · i invalidate",
         (Tab::Memory, 1) => "enter detail · n/p page",
@@ -137,7 +138,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         (Tab::Mind, 0) => "h/l explore · a propose identity · t trigger cognition job",
         (Tab::Mind, 1) => "↑↓ browse identity · a propose · t trigger",
         (Tab::Mind, _) => "↑↓ browse · t trigger reflection/narrative/consolidation",
-        (Tab::Graph, _) => "↑↓ neighbors update",
+        (Tab::Graph, _) => "↵ explore connections · ⌫/esc back · / search · ↑↓ move",
         (Tab::Systems, 1) => "enter inspect · c cancel running · esc close · auto-refreshing",
         (Tab::Systems, 2) => "↑↓ jobs · e toggle · x run now · d delete · n new",
         (Tab::Systems, 3) => "↑↓ events · c cycle category filter",
@@ -1006,83 +1007,181 @@ fn load_bar(v: f64, width: usize) -> String {
     let filled = (v.clamp(0.0, 1.0) * width as f64).round() as usize;
     "█".repeat(filled) + &"░".repeat(width.saturating_sub(filled))
 }
-// ── Graph ────────────────────────────────────────────────────────────────────
+// ── Graph: knowledge explorer ────────────────────────────────────────────────
 fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(area);
+
+    // breadcrumb / search line
+    let mut crumb = vec![Span::styled(" ⌖ ", Style::default().fg(CYAN))];
+    crumb.push(Span::styled("Graph", Style::default().fg(if app.graph_focus.is_none() { CYAN } else { DIM }).bold()));
+    for fc in app.graph_stack.iter().chain(app.graph_focus.iter()) {
+        crumb.push(Span::styled(" › ", Style::default().fg(FAINT)));
+        crumb.push(Span::styled(truncate(&fc.name, 24), Style::default().fg(TEXT).bold()));
+    }
+    if app.graph_editing || !app.graph_filter.is_empty() {
+        crumb.push(Span::styled("    /", Style::default().fg(DIM)));
+        crumb.push(Span::styled(
+            if app.graph_editing { format!("{}▏", app.graph_filter) } else { app.graph_filter.clone() },
+            Style::default().fg(AMBER).bold(),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(crumb)), rows[0]);
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
+        .split(rows[1]);
+
+    // ── left list + right card (build owned, then render) ────────────────
+    let (items, list_title): (Vec<ListItem>, String) = if app.graph_focus.is_none() {
+        let nodes = app.graph_root_nodes();
+        let maxdeg = nodes.iter().map(|n| n.degree).max().unwrap_or(1).max(1);
+        let items = nodes
+            .iter()
+            .map(|n| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(bar_str(n.degree, maxdeg, 8).replace('█', "▰").replace('░', "▱"), Style::default().fg(LIME)),
+                    Span::styled(format!(" {:>4} ", n.degree), Style::default().fg(MINT).bold()),
+                    Span::styled(fit(&n.name, 26), Style::default().fg(TEXT)),
+                    Span::styled(format!(" {}", n.label.clone().unwrap_or_default()), Style::default().fg(type_color(n.label.as_deref().unwrap_or("")))),
+                ]))
+            })
+            .collect();
+        (items, format!("Entities ({}) · ↵ explore · / search", nodes.len()))
+    } else {
+        let nbrs = app.graph_neighbors();
+        let items = nbrs
+            .iter()
+            .map(|nb| {
+                let arrow = if nb.outgoing { "→" } else { "←" };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{:<18}", truncate(nb.rel_type.as_deref().unwrap_or("·"), 18)), Style::default().fg(MINT)),
+                    Span::styled(format!("{arrow} "), Style::default().fg(FAINT)),
+                    Span::styled(fit(&nb.name, 24), Style::default().fg(TEXT)),
+                    Span::styled(format!(" {}", nb.label.clone().unwrap_or_default()), Style::default().fg(type_color(nb.label.as_deref().unwrap_or("")))),
+                ]))
+            })
+            .collect();
+        (items, format!("Connections ({}) · ↵ go · ⌫ back · / filter", nbrs.len()))
+    };
+
+    let card = if app.graph_focus.is_none() {
+        graph_overview_card(app)
+    } else {
+        graph_focus_card(app)
+    };
+
+    f.render_stateful_widget(list_of(list_title, items), cols[0], &mut app.node_sel.state);
+    f.render_widget(Paragraph::new(card).block(panel("Detail")).wrap(Wrap { trim: true }), cols[1]);
+}
+
+fn graph_overview_card(app: &App) -> Text<'static> {
     let density = if app.stats.knowledge_entities > 0 {
         app.stats.knowledge_edges as f64 / app.stats.knowledge_entities as f64
     } else {
         0.0
     };
-    let types = app.attention.as_ref().map(|a| a.breadth.distinct_types).unwrap_or(0);
-    f.render_widget(
-        Paragraph::new(stat_bar(&[
-            ("entities", fmt_int(app.stats.knowledge_entities), PURPLE),
-            ("edges", fmt_int(app.stats.knowledge_edges), LIME),
-            ("density", format!("{density:.2}"), CYAN),
-            ("types", fmt_int(types), GREEN),
-        ])),
-        rows[0],
-    );
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(rows[1]);
-
-    let maxdeg = app.graph.nodes.iter().map(|n| n.degree).max().unwrap_or(1).max(1);
-    let items: Vec<ListItem> = app
-        .graph
-        .nodes
-        .iter()
-        .map(|n| {
-            let filled = ((n.degree as f64 / maxdeg as f64) * 8.0).round() as usize;
-            let bar: String = "▰".repeat(filled) + &"▱".repeat(8usize.saturating_sub(filled));
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{bar} "), Style::default().fg(LIME)),
-                Span::styled(format!("{:>5} ", n.degree), Style::default().fg(MINT).bold()),
-                Span::styled(format!("{:<30}", truncate(&n.name, 30)), Style::default().fg(TEXT)),
-                Span::styled(n.label.clone().unwrap_or_default(), Style::default().fg(PERI)),
-            ]))
-        })
-        .collect();
-    f.render_stateful_widget(list_of(format!("Top entities ({})", app.graph.nodes.len()), items), cols[0], &mut app.node_sel.state);
-
-    let mut lines: Vec<Line> = vec![];
-    if let Some(node) = app.node_sel.selected().and_then(|i| app.graph.nodes.get(i)) {
-        lines.push(Line::from(Span::styled(node.name.clone(), Style::default().fg(CORAL).bold())));
-        lines.push(Line::from(Span::styled(format!("degree {}", node.degree), Style::default().fg(DIM))));
+    let mut lines = vec![
+        Line::from(Span::styled("Knowledge graph", Style::default().fg(CYAN).bold())),
+        Line::from(""),
+        kv("entities", &fmt_int(app.stats.knowledge_entities)),
+        kv("edges", &fmt_int(app.stats.knowledge_edges)),
+        kv("density", &format!("{density:.2} edges/entity")),
+    ];
+    if let Some(a) = &app.attention {
+        lines.push(kv("distinct types", &fmt_int(a.breadth.distinct_types)));
         lines.push(Line::from(""));
-        let name_of = |id: &str| {
-            app.graph.nodes.iter().find(|n| n.id == id).map(|n| n.name.clone()).unwrap_or_else(|| id.to_string())
-        };
-        let mut shown = 0;
-        for l in &app.graph.links {
-            if l.source == node.id {
-                lines.push(rel_line(&l.rel_type, "→", &name_of(&l.target)));
-                shown += 1;
-            } else if l.target == node.id {
-                lines.push(rel_line(&l.rel_type, "←", &name_of(&l.source)));
-                shown += 1;
-            }
+        lines.push(head("Entities by type"));
+        let max = a.breadth.by_type.values().copied().max().unwrap_or(1);
+        let mut entries: Vec<(&String, &i64)> = a.breadth.by_type.iter().collect();
+        entries.sort_by(|x, y| y.1.cmp(x.1));
+        for (k, v) in entries.into_iter().take(12) {
+            lines.push(hbar(k, *v, max, 16, type_color(k)));
         }
-        if shown == 0 {
-            lines.push(Line::from(Span::styled("no edges within loaded set", Style::default().fg(DIM))));
-        }
-    } else {
-        lines.push(Line::from("no selection"));
     }
-    f.render_widget(Paragraph::new(lines).block(panel("Neighbors")).wrap(Wrap { trim: true }), cols[1]);
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  Select an entity and press ↵ to explore its connections.", Style::default().fg(DIM))));
+    Text::from(lines)
 }
 
-fn rel_line(rel: &Option<String>, arrow: &str, other: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{arrow} "), Style::default().fg(MINT)),
-        Span::styled(format!("{:<16}", rel.clone().unwrap_or_default()), Style::default().fg(DIM)),
-        Span::styled(other.to_string(), Style::default().fg(TEXT)),
-    ])
+fn graph_focus_card(app: &App) -> Text<'static> {
+    let Some(focus) = &app.graph_focus else { return Text::from("") };
+    let Some(ego) = &app.graph_ego else {
+        let sp = SPIN[(app.frame as usize / 2) % SPIN.len()];
+        return Text::from(vec![
+            Line::from(Span::styled(focus.name.clone(), Style::default().fg(CORAL).bold())),
+            Line::from(""),
+            Line::from(Span::styled(format!("  {sp}  mapping connections…"), Style::default().fg(MINT))),
+        ]);
+    };
+
+    // group edges by rel_type
+    use std::collections::{BTreeMap, HashMap};
+    let index: HashMap<&str, &crate::api::GNode> = ego.entities.iter().map(|e| (e.id.as_str(), e)).collect();
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut type_counts: BTreeMap<String, i64> = BTreeMap::new();
+    for e in &ego.edges {
+        let other = if e.src_entity_id == focus.id {
+            &e.dst_entity_id
+        } else if e.dst_entity_id == focus.id {
+            &e.src_entity_id
+        } else {
+            continue;
+        };
+        let ent = index.get(other.as_str()).copied();
+        let name = ent.map(|n| n.name.clone()).unwrap_or_else(|| other.clone());
+        groups.entry(e.rel_type.clone().unwrap_or_else(|| "related".into())).or_default().push(name);
+        if let Some(ent) = ent {
+            *type_counts.entry(ent.label.clone().unwrap_or_else(|| "?".into())).or_default() += 1;
+        }
+    }
+    let total: usize = groups.values().map(|v| v.len()).sum();
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(focus.name.clone(), Style::default().fg(CORAL).bold()),
+            Span::styled(format!("  {}", focus.label.clone().unwrap_or_default()), Style::default().fg(type_color(focus.label.as_deref().unwrap_or("")))),
+        ]),
+        Line::from(Span::styled(
+            if focus.degree > 0 {
+                format!("degree {} · {total} loaded · {} relation types", focus.degree, groups.len())
+            } else {
+                format!("{total} connections · {} relation types", groups.len())
+            },
+            Style::default().fg(DIM),
+        )),
+        Line::from(""),
+    ];
+
+    // relations grouped by type, sorted by count desc
+    let mut gv: Vec<(&String, &Vec<String>)> = groups.iter().collect();
+    gv.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    for (rel, names) in gv.into_iter().take(12) {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {} ", rel), Style::default().fg(MINT).bold()),
+            Span::styled(format!("×{}", names.len()), Style::default().fg(FAINT)),
+        ]));
+        let sample = names.iter().take(6).cloned().collect::<Vec<_>>().join(", ");
+        lines.push(Line::from(Span::styled(
+            format!("    {}{}", truncate(&sample, 70), if names.len() > 6 { " …" } else { "" }),
+            Style::default().fg(TEXT),
+        )));
+    }
+
+    if !type_counts.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(head("Neighbour types"));
+        let max = type_counts.values().copied().max().unwrap_or(1);
+        let mut tv: Vec<(&String, &i64)> = type_counts.iter().collect();
+        tv.sort_by(|a, b| b.1.cmp(a.1));
+        for (k, v) in tv.into_iter().take(8) {
+            lines.push(hbar(k, *v, max, 14, type_color(k)));
+        }
+    }
+    Text::from(lines)
 }
 
 // ── Recall ───────────────────────────────────────────────────────────────────
@@ -1928,6 +2027,11 @@ fn draw_help(f: &mut Frame) {
         head("Mind"),
         line("a", "propose identity fact"),
         line("t", "trigger reflection/consolidation/narrative"),
+        Line::from(""),
+        head("Graph"),
+        line("enter", "explore an entity's connections"),
+        line("⌫ / esc", "go back up the path"),
+        line("/", "search / filter entities"),
         Line::from(""),
         head("Systems"),
         line("c", "Agents: cancel run · Events: cycle category"),

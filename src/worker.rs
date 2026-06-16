@@ -20,6 +20,7 @@ pub enum Req {
     Attention,
     Reflections,
     Graph(usize),
+    Expand { id: String, k: usize },
     Recall { query: String, mode: String, k: usize },
     Systems,
     Scheduler,
@@ -51,6 +52,7 @@ pub enum Resp {
     Attention(Box<Attention>),
     Reflections(Vec<Report>),
     Graph(Box<Graph>),
+    Expand(Box<GraphExpand>),
     Recall(Vec<RecallHit>),
     /// systems payload + measured round-trip latency in ms
     Systems(Box<Systems>, u64),
@@ -96,6 +98,7 @@ fn handle(c: &Client, req: Req) -> Resp {
         Req::Attention => wrap(c.attention(), |a| Resp::Attention(Box::new(a))),
         Req::Reflections => wrap(c.reflections(), Resp::Reflections),
         Req::Graph(limit) => wrap(c.graph(limit), |g| Resp::Graph(Box::new(g))),
+        Req::Expand { id, k } => wrap(c.expand(&id, k), |e| Resp::Expand(Box::new(e))),
         Req::Recall { query, mode, k } => wrap(c.recall(&query, &mode, k), Resp::Recall),
         Req::Systems => {
             let t = Instant::now();

@@ -74,7 +74,7 @@ gauges, and sparklines where they add insight.
 | 1 | **Home** | Live system monitor — KPI cards, event sparkline + ticker, running-agents / scheduler / services, derived signals, knowledge + composition bar charts |
 | 2 | **Memory** | **Browse** (FTS search, validity/status filter chips, paginate, invalidate) · **Episodes** (timeline + derived-memory detail, extraction ratio) · **Recall** (semantic fast/deep/divergent, score bars) |
 | 3 | **Mind** | A self-model monitor — **Overview** (who I am · how I think · what I'm focused on · current chapter · latest insight) · **Self** (identity facts + principles) · **Focus** (mental-load gauge + focus bars) · **Story** (current chapter + timeline) · **Insights** (reflections) |
-| 4 | **Graph** | Knowledge entities by degree + neighbor explorer; entities/edges/density/types header |
+| 4 | **Graph** | A knowledge-graph **explorer** — entity directory (by degree) + whole-graph type distribution at the root; `enter` drills into an entity's **real** neighbourhood (via `expand`), shown as relations grouped by type with a neighbour-type chart; navigate deeper, `⌫`/`esc` to go back, breadcrumb path, `/` to search |
 | 5 | **Systems** | An ops monitor — **Overview** (health KPIs, per-service **uptime strips** + live **API-latency** sparkline, engine 7-day activity bars, scheduler/agents/data) · **Agents** (status breakdown, step inspector, **cancel** running) · **Scheduler** (task manager: **toggle / run / delete / new** your jobs + read-only system cron) · **Events** (categorized feed — Agents/Goals/Knowledge/Memory/Cognition/Decisions, filter with `c`) · **Logs** (per-source tail) |
 
 The header always shows the connected host, scheduler status, job count, and any failures.
@@ -88,6 +88,15 @@ The header always shows the connected host, scheduler status, job count, and any
 
 ### Mind · Focus
 ![Mind — Focus](docs/mind-focus.png)
+
+### Graph — a knowledge-graph explorer
+Root: an entity directory by degree + the whole-graph type distribution.
+
+![Graph — root](docs/graph.png)
+
+Drill into any entity (`enter`) to see its real neighbourhood — relations grouped by type, with a neighbour-type chart. `⌫`/`esc` goes back; the breadcrumb shows your path.
+
+![Graph — explore](docs/graph-focus.png)
 
 ### Systems · Overview — a live service monitor
 Per-service uptime strips and an API-latency sparkline (both built from the rolling 3s health polls), engine 7-day activity bars, and live scheduler/agents/data.
@@ -146,6 +155,7 @@ g / G            top / bottom              ?  q   help / quit
 Memory · Browse   / search · v validity · s status · n/p page · i invalidate
 Memory · Recall   / focus query · type + enter to search · m mode · enter open hit
 Mind              a propose fact (Identity) · t trigger reflection/narrative/consolidation
+Graph             enter explore entity · ⌫/esc back · / search entities
 Sys · Agents      enter inspect · c cancel running run
 Sys · Scheduler   e enable/disable · x run now · d delete · n new job
 Sys · Events      c cycle category filter (Agents/Goals/Knowledge/Memory/…)

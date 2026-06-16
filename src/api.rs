@@ -139,6 +139,10 @@ impl Client {
         self.get(&format!("/api/graph?limit={limit}"))
     }
 
+    pub fn expand(&self, id: &str, k: usize) -> Result<GraphExpand> {
+        self.get(&format!("/api/graph/{id}/expand?k={k}"))
+    }
+
     pub fn recall(&self, query: &str, mode: &str, k: usize) -> Result<Vec<RecallHit>> {
         let r: Recall = self.post(
             "/api/recall",
@@ -515,6 +519,36 @@ pub struct Node {
 pub struct Link {
     pub source: String,
     pub target: String,
+    #[serde(default)]
+    pub rel_type: Option<String>,
+}
+
+/// A node's true k-hop neighbourhood from `/api/graph/{id}/expand`.
+#[derive(Deserialize, Default)]
+pub struct GraphExpand {
+    #[serde(default)]
+    pub entities: Vec<GNode>,
+    #[serde(default)]
+    pub edges: Vec<GEdge>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct GNode {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub epistemic_status: Option<String>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct GEdge {
+    #[serde(default)]
+    pub id: String,
+    pub src_entity_id: String,
+    pub dst_entity_id: String,
     #[serde(default)]
     pub rel_type: Option<String>,
 }

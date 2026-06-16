@@ -82,6 +82,24 @@ pub struct SysSample {
 
 pub const SYS_HISTORY_CAP: usize = 90;
 
+/// The entity currently in focus in the knowledge-graph explorer.
+#[derive(Clone)]
+pub struct FocusNode {
+    pub id: String,
+    pub name: String,
+    pub label: Option<String>,
+    pub degree: i64,
+}
+
+/// One neighbour of the focus entity (a single relation edge).
+pub struct NeighborRow {
+    pub id: String,
+    pub name: String,
+    pub label: Option<String>,
+    pub rel_type: Option<String>,
+    pub outgoing: bool,
+}
+
 /// A scrollable list selection wrapping ratatui's `ListState`.
 #[derive(Default)]
 pub struct Sel {
@@ -214,9 +232,14 @@ pub struct App {
     pub reports: Vec<Report>,
     pub rep_sel: Sel,
 
-    // graph
+    // graph explorer
     pub graph: Graph,
     pub node_sel: Sel,
+    pub graph_focus: Option<FocusNode>,
+    pub graph_stack: Vec<FocusNode>,
+    pub graph_ego: Option<GraphExpand>,
+    pub graph_filter: String,
+    pub graph_editing: bool,
 
     // recall
     pub recall_mode: String,
@@ -283,6 +306,11 @@ impl App {
             rep_sel: Sel::default(),
             graph: Graph { nodes: vec![], links: vec![] },
             node_sel: Sel::default(),
+            graph_focus: None,
+            graph_stack: Vec::new(),
+            graph_ego: None,
+            graph_filter: String::new(),
+            graph_editing: false,
             recall_mode: "fast".into(),
             recall_query: String::new(),
             recall_hits: vec![],
@@ -353,6 +381,141 @@ impl App {
         }
     }
 
+    // -----------------------------------------------------------------
+    // knowledge-graph explorer
+    // -----------------------------------------------------------------
+
+    /// Top entities (root view), filtered by the name search.
+    pub fn graph_root_nodes(&self) -> Vec<&Node> {
+        let f = self.graph_filter.to_lowercase();
+        self.graph
+            .nodes
+            .iter()
+            .filter(|n| f.is_empty() || n.name.to_lowercase().contains(&f))
+            .collect()
+    }
+
+    /// Neighbours of the focus entity (one row per relation), name-filtered,
+    /// sorted by relation type then name.
+    pub fn graph_neighbors(&self) -> Vec<NeighborRow> {
+        let (Some(focus), Some(ego)) = (&self.graph_focus, &self.graph_ego) else {
+            return vec![];
+        };
+        let index: std::collections::HashMap<&str, &GNode> =
+            ego.entities.iter().map(|e| (e.id.as_str(), e)).collect();
+        let name_of = |id: &str| index.get(id).copied();
+        let f = self.graph_filter.to_lowercase();
+        let mut rows: Vec<NeighborRow> = ego
+            .edges
+            .iter()
+            .filter_map(|e| {
+                let (other, outgoing) = if e.src_entity_id == focus.id {
+                    (&e.dst_entity_id, true)
+                } else if e.dst_entity_id == focus.id {
+                    (&e.src_entity_id, false)
+                } else {
+                    return None; // not incident to focus (shouldn't happen at k=1)
+                };
+                let node = name_of(other);
+                let name = node.map(|n| n.name.clone()).unwrap_or_else(|| other.clone());
+                if !f.is_empty() && !name.to_lowercase().contains(&f) {
+                    return None;
+                }
+                Some(NeighborRow {
+                    id: other.clone(),
+                    name,
+                    label: node.and_then(|n| n.label.clone()),
+                    rel_type: e.rel_type.clone(),
+                    outgoing,
+                })
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            a.rel_type
+                .cmp(&b.rel_type)
+                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        rows
+    }
+
+    /// Current list length (root nodes or neighbours).
+    fn graph_list_len(&self) -> usize {
+        if self.graph_focus.is_none() {
+            self.graph_root_nodes().len()
+        } else {
+            self.graph_neighbors().len()
+        }
+    }
+
+    /// Drill into the selected entity/neighbour, loading its real neighbourhood.
+    fn graph_drill(&mut self) {
+        let Some(sel) = self.node_sel.selected() else { return };
+        let target = if self.graph_focus.is_none() {
+            self.graph_root_nodes().get(sel).map(|n| FocusNode {
+                id: n.id.clone(),
+                name: n.name.clone(),
+                label: n.label.clone(),
+                degree: n.degree,
+            })
+        } else {
+            self.graph_neighbors().get(sel).map(|nb| FocusNode {
+                id: nb.id.clone(),
+                name: nb.name.clone(),
+                label: nb.label.clone(),
+                degree: 0,
+            })
+        };
+        if let Some(t) = target {
+            if let Some(cur) = self.graph_focus.take() {
+                self.graph_stack.push(cur);
+            }
+            let id = t.id.clone();
+            self.graph_focus = Some(t);
+            self.graph_filter.clear();
+            self.graph_ego = None;
+            self.node_sel.set_len(0);
+            self.send(Req::Expand { id, k: 1 });
+        }
+    }
+
+    /// Go back up the exploration path (neighbour → parent → … → root).
+    fn graph_back(&mut self) {
+        self.graph_filter.clear();
+        if let Some(prev) = self.graph_stack.pop() {
+            let id = prev.id.clone();
+            self.graph_focus = Some(prev);
+            self.graph_ego = None;
+            self.node_sel.set_len(0);
+            self.send(Req::Expand { id, k: 1 });
+        } else if self.graph_focus.is_some() {
+            self.graph_focus = None;
+            self.graph_ego = None;
+            self.node_sel.set_len(self.graph_root_nodes().len());
+            self.node_sel.first();
+        }
+    }
+
+    fn handle_graph_input(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.should_quit = true
+            }
+            KeyCode::Esc => {
+                self.graph_filter.clear();
+                self.graph_editing = false;
+            }
+            KeyCode::Enter => self.graph_editing = false,
+            KeyCode::Backspace => {
+                self.graph_filter.pop();
+            }
+            KeyCode::Char(c) => self.graph_filter.push(c),
+            _ => {}
+        }
+        let n = self.graph_list_len();
+        self.node_sel.set_len(n);
+        self.node_sel.first();
+    }
+
     /// Events matching the active category filter (`event_cat`; 0 = All).
     pub fn filtered_events(&self) -> Vec<&Event> {
         self.events
@@ -418,7 +581,14 @@ impl App {
                 3 => self.send(Req::Narrative),
                 _ => self.send(Req::Reflections),
             },
-            Tab::Graph => self.send(Req::Graph(60)),
+            Tab::Graph => {
+                self.send(Req::Graph(120));
+                self.send(Req::Attention); // whole-graph type distribution
+                if let Some(fc) = &self.graph_focus {
+                    let id = fc.id.clone();
+                    self.send(Req::Expand { id, k: 1 });
+                }
+            }
             Tab::Systems => match self.sys_sub {
                 0 => {
                     self.send(Req::Systems);
@@ -484,8 +654,17 @@ impl App {
                 self.reports = v;
             }
             Resp::Graph(g) => {
-                self.node_sel.set_len(g.nodes.len());
                 self.graph = *g;
+                if self.graph_focus.is_none() {
+                    let n = self.graph_root_nodes().len();
+                    self.node_sel.set_len(n);
+                }
+            }
+            Resp::Expand(e) => {
+                self.graph_ego = Some(*e);
+                let n = self.graph_neighbors().len();
+                self.node_sel.set_len(n);
+                self.node_sel.first();
             }
             Resp::Recall(v) => {
                 self.recall_loading = false;
@@ -587,9 +766,13 @@ impl App {
             Overlay::None => {}
         }
 
-        // Inline recall query editor captures all keys while focused.
+        // Inline editors capture all keys while focused.
         if self.recall_editing {
             self.handle_recall_input(key);
+            return;
+        }
+        if self.graph_editing {
+            self.handle_graph_input(key);
             return;
         }
 
@@ -603,8 +786,11 @@ impl App {
             KeyCode::Esc => {
                 if self.tab == Tab::Systems && self.sys_sub == 1 {
                     self.agent_detail = None;
+                } else if self.tab == Tab::Graph {
+                    self.graph_back();
                 }
             }
+            KeyCode::Backspace if self.tab == Tab::Graph => self.graph_back(),
             KeyCode::Char('A') => self.open_form(FormKind::Capture),
             KeyCode::Tab => self.switch_tab((self.tab.index() + 1) % TABS.len()),
             KeyCode::BackTab => {
@@ -729,6 +915,7 @@ impl App {
                     self.send(Req::AgentRun(id));
                 }
             }
+            (Tab::Graph, _) => self.graph_drill(),
             _ => {}
         }
     }
@@ -804,6 +991,12 @@ impl App {
                 }
                 _ => {}
             },
+            // Graph explorer — search/filter the current list
+            (Tab::Graph, _) => {
+                if key.code == KeyCode::Char('/') {
+                    self.graph_editing = true;
+                }
+            }
             // Mind (cognition triggers available throughout; propose on Overview/Self)
             (Tab::Mind, sub) => match key.code {
                 KeyCode::Char('a') if sub == 0 || sub == 1 => self.open_form(FormKind::Identity),
