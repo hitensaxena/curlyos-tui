@@ -24,6 +24,11 @@ pub enum Req {
     Recall { query: String, mode: String, k: usize },
     Systems,
     Scheduler,
+    LlmObs,
+    RecallObs,
+    PipelineObs,
+    Settings,
+    PutSetting { key: String, value: serde_json::Value, label: String },
     Events(usize),
     LogSources,
     Logs { source: String, limit: usize },
@@ -57,6 +62,10 @@ pub enum Resp {
     /// systems payload + measured round-trip latency in ms
     Systems(Box<Systems>, u64),
     Scheduler(Box<Scheduler>),
+    LlmObs(Box<LlmObservability>),
+    RecallObs(Box<RecallStats>),
+    PipelineObs(Box<PipelineStats>),
+    Settings(Vec<(String, SettingItem)>),
     Events(Vec<Event>),
     LogSources(Vec<LogSource>),
     Logs(Box<Logs>),
@@ -108,6 +117,14 @@ fn handle(c: &Client, req: Req) -> Resp {
             }
         }
         Req::Scheduler => wrap(c.scheduler(), |s| Resp::Scheduler(Box::new(s))),
+        Req::LlmObs => wrap(c.observability_llm(), |v| Resp::LlmObs(Box::new(v))),
+        Req::RecallObs => wrap(c.observability_recall(), |v| Resp::RecallObs(Box::new(v))),
+        Req::PipelineObs => wrap(c.observability_pipeline(), |v| Resp::PipelineObs(Box::new(v))),
+        Req::Settings => wrap(c.settings(), Resp::Settings),
+        Req::PutSetting { key, value, label } => match c.put_setting(&key, value) {
+            Ok(()) => Resp::ActionOk { msg: label, refresh: true },
+            Err(e) => Resp::Error(format!("setting: {e}")),
+        },
         Req::Events(n) => wrap(c.events(n), Resp::Events),
         Req::LogSources => wrap(c.log_sources(), Resp::LogSources),
         Req::Logs { source, limit } => wrap(c.logs(&source, limit), |l| Resp::Logs(Box::new(l))),

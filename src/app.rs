@@ -9,7 +9,8 @@ use std::sync::mpsc::Sender;
 pub const TABS: [&str; 5] = ["Home", "Memory", "Mind", "Graph", "Systems"];
 pub const MEM_SUBS: [&str; 3] = ["Browse", "Episodes", "Recall"];
 pub const MIND_SUBS: [&str; 5] = ["Overview", "Self", "Focus", "Story", "Insights"];
-pub const SYS_SUBS: [&str; 5] = ["Overview", "Agents", "Scheduler", "Events", "Logs"];
+pub const SYS_SUBS: [&str; 8] =
+    ["Overview", "Agents", "Scheduler", "Events", "Logs", "Routing", "Pipeline", "Settings"];
 pub const EVENT_CATS: [&str; 8] =
     ["All", "Agents", "Goals", "Knowledge", "Memory", "Cognition", "Decisions", "Other"];
 
@@ -179,6 +180,7 @@ pub enum FormKind {
     Identity,
     Compose,
     NewJob,
+    EditSetting { key: String },
 }
 
 pub struct FormField {
@@ -268,6 +270,13 @@ pub struct App {
     pub log_source_idx: usize,
     pub logs: Option<Logs>,
 
+    // observability v2 (Systems · Routing / Pipeline / Settings)
+    pub llm_obs: Option<LlmObservability>,
+    pub recall_obs: Option<RecallStats>,
+    pub pipeline_obs: Option<PipelineStats>,
+    pub settings: Vec<(String, SettingItem)>,
+    pub set_sel: Sel,
+
     // agents
     pub agent_runs: Vec<AgentRun>,
     pub agent_sel: Sel,
@@ -332,6 +341,11 @@ impl App {
             log_sources: vec![],
             log_source_idx: 0,
             logs: None,
+            llm_obs: None,
+            recall_obs: None,
+            pipeline_obs: None,
+            settings: vec![],
+            set_sel: Sel::default(),
             agent_runs: vec![],
             agent_sel: Sel::default(),
             agent_detail: None,
@@ -600,7 +614,7 @@ impl App {
                     self.send(Req::ScheduledJobs);
                 }
                 3 => self.send(Req::Events(80)),
-                _ => {
+                4 => {
                     if let Some(src) = self.log_sources.get(self.log_source_idx) {
                         let source = src.name.clone();
                         self.send(Req::Logs { source, limit: 300 });
@@ -608,6 +622,12 @@ impl App {
                         self.send(Req::LogSources);
                     }
                 }
+                5 => self.send(Req::LlmObs),
+                6 => {
+                    self.send(Req::PipelineObs);
+                    self.send(Req::RecallObs);
+                }
+                _ => self.send(Req::Settings),
             },
         }
     }
@@ -683,6 +703,16 @@ impl App {
                 self.systems = Some(*s);
             }
             Resp::Scheduler(s) => self.scheduler = Some(*s),
+            Resp::LlmObs(v) => self.llm_obs = Some(*v),
+            Resp::RecallObs(v) => self.recall_obs = Some(*v),
+            Resp::PipelineObs(v) => self.pipeline_obs = Some(*v),
+            Resp::Settings(v) => {
+                self.set_sel.set_len(v.len());
+                if self.set_sel.selected().is_none() {
+                    self.set_sel.first();
+                }
+                self.settings = v;
+            }
             Resp::Events(v) => {
                 self.events = v;
                 let n = self.filtered_events().len();
@@ -881,7 +911,8 @@ impl App {
                 1 => &mut self.agent_sel,
                 2 => &mut self.sched_sel,
                 3 => &mut self.event_sel,
-                _ => &mut self.node_sel, // overview/logs have no list
+                7 => &mut self.set_sel,
+                _ => &mut self.node_sel, // overview/logs/routing/pipeline have no list
             },
             Tab::Home => &mut self.node_sel,
         }
@@ -915,6 +946,7 @@ impl App {
                     self.send(Req::AgentRun(id));
                 }
             }
+            (Tab::Systems, 7) => self.activate_setting(),
             (Tab::Graph, _) => self.graph_drill(),
             _ => {}
         }
@@ -1070,6 +1102,38 @@ impl App {
         }
     }
 
+    /// Systems · Settings: Enter toggles a bool setting in place; for int/float/str
+    /// it opens a small edit form. The server validates/coerces the new value.
+    fn activate_setting(&mut self) {
+        let Some(i) = self.set_sel.selected() else { return };
+        let Some((key, item)) = self.settings.get(i) else { return };
+        let (key, item) = (key.clone(), item.clone());
+        if item.ty.as_deref() == Some("bool") {
+            let cur = item.value.as_bool().unwrap_or(false);
+            self.send(Req::PutSetting {
+                key: key.clone(),
+                value: serde_json::Value::Bool(!cur),
+                label: format!("{key} → {}", !cur),
+            });
+        } else {
+            self.open_setting_edit(key, item);
+        }
+    }
+
+    fn open_setting_edit(&mut self, key: String, item: SettingItem) {
+        let cur = match &item.value {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        let ty = item.ty.clone().unwrap_or_default();
+        self.overlay = Overlay::Form(Form {
+            kind: FormKind::EditSetting { key },
+            title: format!("Edit setting ({ty})"),
+            fields: vec![FormField { label: format!("value [{ty}]"), value: cur }],
+            active: 0,
+        });
+    }
+
     fn open_cognition_menu(&mut self) {
         self.overlay = Overlay::Menu {
             title: "Trigger cognition job".into(),
@@ -1161,6 +1225,8 @@ impl App {
                 ],
                 active: 0,
             },
+            // Built via open_setting_edit (it needs the current value); never here.
+            FormKind::EditSetting { .. } => return,
         };
         self.overlay = Overlay::Form(form);
     }
@@ -1320,6 +1386,19 @@ impl App {
                         "bad cadence — try 'daily 09:00', 'every 60', 'weekly 0,2 18:00', 'monthly 1 09:00'".into(),
                         true,
                     ));
+                }
+            }
+            FormKind::EditSetting { key } => {
+                let v = form.fields[0].value.trim().to_string();
+                if v.is_empty() {
+                    self.status = Some(("value is required".into(), true));
+                } else {
+                    // Send as a string; the server coerces it to the registry type.
+                    self.send(Req::PutSetting {
+                        key: key.clone(),
+                        value: serde_json::Value::String(v.clone()),
+                        label: format!("{key} → {v}"),
+                    });
                 }
             }
         }

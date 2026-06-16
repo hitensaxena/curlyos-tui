@@ -91,6 +91,13 @@ fn selftest(base: &str) -> Result<()> {
         println!("  run detail  {} actions", c.agent_run(&r.id)?.actions.len());
     }
     println!("  sched jobs  {}", c.scheduled_jobs()?.len());
+    let llm = c.observability_llm()?;
+    println!("  obs.llm     {} tiers · uptime {:.0}s", llm.tiers.len(), llm.uptime_seconds);
+    let rc = c.observability_recall()?;
+    println!("  obs.recall  {} req · hit-rate {:.0}%", rc.requests, rc.hit_rate * 100.0);
+    let pl = c.observability_pipeline()?;
+    println!("  obs.pipeline distill-backlog={} ingest24h={}", pl.backlog.episodes_awaiting_distillation, pl.ingest_rate.last_24h);
+    println!("  settings    {} keys", c.settings()?.len());
     println!("OK");
     Ok(())
 }

@@ -75,7 +75,7 @@ gauges, and sparklines where they add insight.
 | 2 | **Memory** | **Browse** (FTS search, validity/status filter chips, paginate, invalidate) · **Episodes** (timeline + derived-memory detail, extraction ratio) · **Recall** (semantic fast/deep/divergent, score bars) |
 | 3 | **Mind** | A self-model monitor — **Overview** (who I am · how I think · what I'm focused on · current chapter · latest insight) · **Self** (identity facts + principles) · **Focus** (mental-load gauge + focus bars) · **Story** (current chapter + timeline) · **Insights** (reflections) |
 | 4 | **Graph** | A knowledge-graph **explorer** — entity directory (by degree) + whole-graph type distribution at the root; `enter` drills into an entity's **real** neighbourhood (via `expand`), shown as relations grouped by type with a neighbour-type chart; navigate deeper, `⌫`/`esc` to go back, breadcrumb path, `/` to search |
-| 5 | **Systems** | An ops monitor — **Overview** (health KPIs, per-service **uptime strips** + live **API-latency** sparkline, engine 7-day activity bars, scheduler/agents/data) · **Agents** (status breakdown, step inspector, **cancel** running) · **Scheduler** (task manager: **toggle / run / delete / new** your jobs + read-only system cron) · **Events** (categorized feed — Agents/Goals/Knowledge/Memory/Cognition/Decisions, filter with `c`) · **Logs** (per-source tail) |
+| 5 | **Systems** | An ops monitor — **Overview** (health KPIs, per-service **uptime strips** + live **API-latency** sparkline, engine 7-day activity bars, scheduler/agents/data) · **Agents** (status breakdown, step inspector, **cancel** running) · **Scheduler** (task manager: **toggle / run / delete / new** your jobs + read-only system cron) · **Events** (categorized feed — Agents/Goals/Knowledge/Memory/Cognition/Decisions, filter with `c`) · **Logs** (per-source tail) · **Routing** (per-tier LLM health — provider, model, calls/errors/fallbacks/latency) · **Pipeline** (embed/distill backlog, ingest rate, recall cache hit-rate) · **Settings** (typed runtime knobs — `enter` toggles a bool or edits a value, applied live) |
 
 The header always shows the connected host, scheduler status, job count, and any failures.
 **Home and Systems auto-refresh every 3s** so you can watch things move without pressing `r`.
@@ -160,6 +160,7 @@ Sys · Agents      enter inspect · c cancel running run
 Sys · Scheduler   e enable/disable · x run now · d delete · n new job
 Sys · Events      c cycle category filter (Agents/Goals/Knowledge/Memory/…)
 Sys · Logs        s cycle log source
+Sys · Settings    enter toggle bool / edit value (applied live, server-validated)
 Global            A capture episode (ingest)
 ```
 
@@ -180,6 +181,8 @@ The TUI is read-mostly. The only mutations it can perform are low-risk and expli
 - **Manage scheduled jobs** (Systems · Scheduler) — enable/disable (`e`), run now (`x`),
   delete (`d`, confirmed), create a new job (`n`, with a compact cadence like `daily 09:00`).
 - **Cancel a running agent** (`c`, Systems · Agents, confirmed).
+- **Edit runtime settings** (`enter`, Systems · Settings) — toggles a bool or edits a value via
+  `PUT /api/settings/{key}`; the server validates and coerces, and changes apply live.
 
 No bulk memory deletes, no safety-kill, no approvals/goals control.
 

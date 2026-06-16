@@ -182,6 +182,31 @@ impl Client {
         Ok(r.items)
     }
 
+    pub fn observability_llm(&self) -> Result<LlmObservability> {
+        self.get("/api/observability/llm")
+    }
+    pub fn observability_recall(&self) -> Result<RecallStats> {
+        self.get("/api/observability/recall")
+    }
+    pub fn observability_pipeline(&self) -> Result<PipelineStats> {
+        self.get("/api/observability/pipeline")
+    }
+
+    /// All settings as (key, item), ordered by category then key for stable rows.
+    pub fn settings(&self) -> Result<Vec<(String, SettingItem)>> {
+        let r: SettingsResp = self.get("/api/settings")?;
+        let mut v: Vec<(String, SettingItem)> = r.settings.into_iter().collect();
+        v.sort_by(|a, b| a.1.category.cmp(&b.1.category).then(a.0.cmp(&b.0)));
+        Ok(v)
+    }
+    pub fn put_setting(&self, key: &str, value: serde_json::Value) -> Result<()> {
+        self.send_empty(
+            reqwest::Method::PUT,
+            &format!("/api/settings/{key}"),
+            serde_json::json!({ "value": value }),
+        )
+    }
+
     // ---- safe writes -----------------------------------------------------
 
     pub fn invalidate_memory(&self, id: &str) -> Result<()> {
@@ -201,9 +226,10 @@ impl Client {
     }
 
     pub fn ingest(&self, content: &str) -> Result<()> {
+        // curlyos-core's /api/ingest reads the `text` field (not `content`).
         let _: serde_json::Value = self.post(
             "/api/ingest",
-            serde_json::json!({ "content": content, "source_ref": "curlyos-tui:capture" }),
+            serde_json::json!({ "text": content, "source_ref": "curlyos-tui:capture" }),
         )?;
         Ok(())
     }
@@ -760,6 +786,129 @@ pub struct ScheduledJob {
     pub next_due: Option<String>,
     #[serde(default)]
     pub registered: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Observability v2 (LLM routing / recall / pipeline) + settings
+// ---------------------------------------------------------------------------
+
+/// Per-tier LLM routing health from /api/observability/llm.
+#[derive(Deserialize, Default)]
+pub struct LlmObservability {
+    #[serde(default)]
+    pub tiers: std::collections::BTreeMap<String, LlmTier>,
+    #[serde(default)]
+    pub uptime_seconds: f64,
+}
+
+#[derive(Deserialize, Clone, Default)]
+pub struct LlmTier {
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub chain: Vec<String>,
+    #[serde(default)]
+    pub configured: bool,
+    #[serde(default)]
+    pub calls: i64,
+    #[serde(default)]
+    pub errors: i64,
+    #[serde(default)]
+    pub fallbacks: i64,
+    #[serde(default)]
+    pub avg_latency_ms: f64,
+    #[serde(default)]
+    pub last_model: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub error_rate: f64,
+}
+
+/// Recall throughput + cache hit-rate from /api/observability/recall.
+#[derive(Deserialize, Default)]
+pub struct RecallStats {
+    #[serde(default)]
+    pub requests: i64,
+    #[serde(default)]
+    pub cache_hits: i64,
+    #[serde(default)]
+    pub cache_misses: i64,
+    #[serde(default)]
+    pub errors: i64,
+    #[serde(default)]
+    pub hit_rate: f64,
+    #[serde(default)]
+    pub avg_latency_ms: f64,
+    #[serde(default)]
+    pub avg_latency_cached_ms: f64,
+    #[serde(default)]
+    pub uptime_seconds: f64,
+}
+
+/// Pipeline backlog + ingest rate + KG size from /api/observability/pipeline.
+#[derive(Deserialize, Default)]
+pub struct PipelineStats {
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub backlog: Backlog,
+    #[serde(default)]
+    pub ingest_rate: IngestRate,
+    #[serde(default)]
+    pub knowledge_graph: KgSize,
+}
+
+#[derive(Deserialize, Default)]
+pub struct Backlog {
+    #[serde(default)]
+    pub unembedded_episodes: i64,
+    #[serde(default)]
+    pub unembedded_memories: i64,
+    #[serde(default)]
+    pub episodes_awaiting_distillation: i64,
+}
+
+#[derive(Deserialize, Default)]
+pub struct IngestRate {
+    #[serde(default)]
+    pub last_1h: i64,
+    #[serde(default)]
+    pub last_24h: i64,
+}
+
+#[derive(Deserialize, Default)]
+pub struct KgSize {
+    #[serde(default)]
+    pub entities: i64,
+    #[serde(default)]
+    pub edges: i64,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct SettingItem {
+    #[serde(default)]
+    pub value: serde_json::Value,
+    #[serde(default)]
+    pub default: serde_json::Value,
+    #[serde(rename = "type", default)]
+    pub ty: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub is_default: bool,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SettingsResp {
+    #[serde(default)]
+    settings: std::collections::BTreeMap<String, SettingItem>,
 }
 
 // ---------------------------------------------------------------------------

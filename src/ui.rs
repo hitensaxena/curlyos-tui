@@ -143,6 +143,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         (Tab::Systems, 2) => "↑↓ jobs · e toggle · x run now · d delete · n new",
         (Tab::Systems, 3) => "↑↓ events · c cycle category filter",
         (Tab::Systems, 4) => "s cycle log source",
+        (Tab::Systems, 5) => "LLM routing health · per-tier usage · auto-refreshing",
+        (Tab::Systems, 6) => "ingest pipeline backlog + recall cache · auto-refreshing",
+        (Tab::Systems, 7) => "↑↓ settings · ↵ toggle/edit · changes apply live",
         (Tab::Systems, _) => "h/l sub-view · live ops monitor",
     };
     let line = Line::from(vec![
@@ -1363,7 +1366,10 @@ fn draw_systems(f: &mut Frame, app: &mut App, area: Rect) {
         1 => draw_agents(f, app, rows[1]),
         2 => draw_sys_scheduler(f, app, rows[1]),
         3 => draw_sys_events(f, app, rows[1]),
-        _ => draw_sys_logs(f, app, rows[1]),
+        4 => draw_sys_logs(f, app, rows[1]),
+        5 => draw_sys_routing(f, app, rows[1]),
+        6 => draw_sys_pipeline(f, app, rows[1]),
+        _ => draw_sys_settings(f, app, rows[1]),
     }
 }
 
@@ -2060,6 +2066,248 @@ fn subsplit(area: Rect) -> std::rc::Rc<[Rect]> {
 }
 
 /// A one-line KPI header: bold value + dim label, dot-separated.
+// ── Systems · Routing (LLM tier health) ────────────────────────────────────
+fn draw_sys_routing(f: &mut Frame, app: &App, area: Rect) {
+    let Some(obs) = &app.llm_obs else {
+        f.render_widget(Paragraph::new("loading routing…").block(panel("Routing")), area);
+        return;
+    };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+
+    let total_calls: i64 = obs.tiers.values().map(|t| t.calls).sum();
+    let total_err: i64 = obs.tiers.values().map(|t| t.errors).sum();
+    let total_fb: i64 = obs.tiers.values().map(|t| t.fallbacks).sum();
+    f.render_widget(
+        Paragraph::new(stat_bar(&[
+            ("LLM calls", fmt_int(total_calls), GREEN),
+            ("errors", fmt_int(total_err), if total_err > 0 { RED } else { DIM }),
+            ("fallbacks", fmt_int(total_fb), if total_fb > 0 { AMBER } else { DIM }),
+            ("uptime", fmt_dur(obs.uptime_seconds), PERI),
+        ])),
+        rows[0],
+    );
+
+    // one card per tier, in routing order (fast = high-volume, deep = heavy)
+    let order = ["fast", "agentic", "deep"];
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Ratio(1, 3); 3])
+        .split(rows[1]);
+    let row = |k: &str, v: String, col: Color| {
+        Line::from(vec![
+            Span::styled(format!("  {k:<10}"), Style::default().fg(DIM)),
+            Span::styled(v, Style::default().fg(col)),
+        ])
+    };
+    for (i, name) in order.iter().enumerate() {
+        let title = format!("{} tier", name);
+        let Some(t) = obs.tiers.get(*name) else {
+            f.render_widget(Paragraph::new("not configured").block(panel(&title)), cols[i]);
+            continue;
+        };
+        let dot = Span::styled("● ", Style::default().fg(if t.configured { GREEN } else { FAINT }));
+        let err_col = if t.errors > 0 { RED } else { DIM };
+        let lat_col = if t.avg_latency_ms > 4000.0 { RED } else if t.avg_latency_ms > 1500.0 { AMBER } else { GREEN };
+        let mut lines = vec![
+            Line::from(vec![dot, Span::styled(fit(&t.model, 24), Style::default().fg(TEXT).bold())]),
+            Line::from(Span::styled(format!("  {}", fit(&t.endpoint, 30)), Style::default().fg(FAINT))),
+            Line::raw(""),
+            row("calls", fmt_int(t.calls), GREEN),
+            row("errors", fmt_int(t.errors), err_col),
+            row("err rate", format!("{:.1}%", t.error_rate * 100.0), err_col),
+            row("fallbacks", fmt_int(t.fallbacks), if t.fallbacks > 0 { AMBER } else { DIM }),
+            row("avg lat", format!("{:.0}ms", t.avg_latency_ms), lat_col),
+        ];
+        if let Some(lm) = &t.last_model {
+            lines.push(row("last", fit(lm, 22), DIM));
+        }
+        if let Some(le) = &t.last_error {
+            lines.push(Line::from(Span::styled(format!("  ⚠ {}", fit(le, 28)), Style::default().fg(RED))));
+        }
+        f.render_widget(Paragraph::new(lines).block(panel(&title)), cols[i]);
+    }
+}
+
+// ── Systems · Pipeline (ingest backlog + recall cache) ──────────────────────
+fn draw_sys_pipeline(f: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+
+    let pl = app.pipeline_obs.as_ref();
+    let rc = app.recall_obs.as_ref();
+    let i1h = pl.map(|p| p.ingest_rate.last_1h).unwrap_or(0);
+    let i24 = pl.map(|p| p.ingest_rate.last_24h).unwrap_or(0);
+    let hit = rc.map(|r| r.hit_rate).unwrap_or(0.0);
+    f.render_widget(
+        Paragraph::new(stat_bar(&[
+            ("ingest 1h", fmt_int(i1h), GREEN),
+            ("ingest 24h", fmt_int(i24), MINT),
+            ("recall hit-rate", format!("{:.0}%", hit * 100.0), if hit >= 0.5 { GREEN } else { AMBER }),
+        ])),
+        rows[0],
+    );
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[1]);
+
+    // left: pipeline backlog + KG size
+    let mut left: Vec<Line> = vec![];
+    if let Some(p) = pl {
+        let b = &p.backlog;
+        let warn = |n: i64| if n > 50 { AMBER } else if n > 0 { TEXT } else { DIM };
+        left.push(backlog_row("unembedded episodes", b.unembedded_episodes, warn(b.unembedded_episodes)));
+        left.push(backlog_row("unembedded memories", b.unembedded_memories, warn(b.unembedded_memories)));
+        left.push(backlog_row("awaiting distillation", b.episodes_awaiting_distillation, warn(b.episodes_awaiting_distillation)));
+        left.push(Line::raw(""));
+        left.push(backlog_row("KG entities", p.knowledge_graph.entities, PERI));
+        left.push(backlog_row("KG edges", p.knowledge_graph.edges, PERI));
+    } else {
+        left.push(Line::from(Span::styled("  loading pipeline…", Style::default().fg(DIM))));
+    }
+    f.render_widget(Paragraph::new(left).block(panel("Pipeline backlog")), cols[0]);
+
+    // right: recall cache metrics
+    let mut right: Vec<Line> = vec![];
+    if let Some(r) = rc {
+        right.push(backlog_row("requests", r.requests, TEXT));
+        right.push(backlog_row("cache hits", r.cache_hits, GREEN));
+        right.push(backlog_row("cache misses", r.cache_misses, DIM));
+        right.push(backlog_row("errors", r.errors, if r.errors > 0 { RED } else { DIM }));
+        right.push(Line::raw(""));
+        right.push(Line::from(vec![
+            Span::styled(format!("  {:<22}", "hit-rate"), Style::default().fg(DIM)),
+            Span::styled(format!("{:.1}%", r.hit_rate * 100.0), Style::default().fg(if r.hit_rate >= 0.5 { GREEN } else { AMBER }).bold()),
+        ]));
+        right.push(Line::from(vec![
+            Span::styled(format!("  {:<22}", "avg latency (cold)"), Style::default().fg(DIM)),
+            Span::styled(format!("{:.0}ms", r.avg_latency_ms), Style::default().fg(TEXT)),
+        ]));
+        right.push(Line::from(vec![
+            Span::styled(format!("  {:<22}", "avg latency (cached)"), Style::default().fg(DIM)),
+            Span::styled(format!("{:.0}ms", r.avg_latency_cached_ms), Style::default().fg(GREEN)),
+        ]));
+    } else {
+        right.push(Line::from(Span::styled("  loading recall…", Style::default().fg(DIM))));
+    }
+    f.render_widget(Paragraph::new(right).block(panel("Recall · cache")), cols[1]);
+}
+
+fn backlog_row(label: &str, n: i64, col: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {:<22}", label), Style::default().fg(DIM)),
+        Span::styled(fmt_int(n), Style::default().fg(col).bold()),
+    ])
+}
+
+// ── Systems · Settings (typed runtime knobs, editable) ──────────────────────
+fn draw_sys_settings(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.settings.is_empty() {
+        f.render_widget(Paragraph::new("loading settings…").block(panel("Settings")), area);
+        return;
+    }
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+
+    let items: Vec<ListItem> = app
+        .settings
+        .iter()
+        .map(|(key, it)| {
+            let val = setting_value_str(&it.value);
+            let val_col = match it.ty.as_deref() {
+                Some("bool") if it.value.as_bool() == Some(true) => GREEN,
+                Some("bool") => FAINT,
+                _ => MINT,
+            };
+            let marker = if it.is_default {
+                Span::styled("  ", Style::default())
+            } else {
+                Span::styled("• ", Style::default().fg(AMBER))
+            };
+            ListItem::new(Line::from(vec![
+                marker,
+                Span::styled(fit(key, 28), Style::default().fg(TEXT).bold()),
+                Span::styled("= ", Style::default().fg(DIM)),
+                Span::styled(val, Style::default().fg(val_col)),
+            ]))
+        })
+        .collect();
+    f.render_stateful_widget(
+        list_of(format!("Settings ({}) · ↵ toggle/edit", app.settings.len()), items),
+        cols[0],
+        &mut app.set_sel.state,
+    );
+
+    // detail of the selected setting
+    let detail = app.set_sel.selected().and_then(|i| app.settings.get(i));
+    let mut lines: Vec<Line> = vec![];
+    if let Some((key, it)) = detail {
+        lines.push(Line::from(Span::styled(key.clone(), Style::default().fg(PERI).bold())));
+        lines.push(Line::raw(""));
+        lines.push(kv("category", it.category.as_deref().unwrap_or("-")));
+        lines.push(kv("type", it.ty.as_deref().unwrap_or("-")));
+        lines.push(kv("current", &setting_value_str(&it.value)));
+        lines.push(kv("default", &setting_value_str(&it.default)));
+        lines.push(kv("source", if it.is_default { "default" } else { "overridden" }));
+        if let Some(u) = &it.updated_at {
+            lines.push(kv("updated", &fmt_date(Some(u))));
+        }
+        lines.push(Line::raw(""));
+        if let Some(d) = &it.description {
+            for w in wrap_text(d, 40) {
+                lines.push(Line::from(Span::styled(w, Style::default().fg(DIM))));
+            }
+        }
+    }
+    f.render_widget(Paragraph::new(lines).block(panel("Detail")), cols[1]);
+}
+
+fn setting_value_str(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => "—".into(),
+        other => other.to_string(),
+    }
+}
+
+/// Greedy word-wrap to `width` columns (approx; counts chars, not graphemes).
+fn wrap_text(s: &str, width: usize) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut line = String::new();
+    for word in s.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            out.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
+/// Seconds → compact human duration (e.g. "45s", "12m", "3.2h").
+fn fmt_dur(secs: f64) -> String {
+    if secs < 90.0 {
+        format!("{secs:.0}s")
+    } else if secs < 5400.0 {
+        format!("{:.0}m", secs / 60.0)
+    } else {
+        format!("{:.1}h", secs / 3600.0)
+    }
+}
+
 fn stat_bar(items: &[(&str, String, Color)]) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
     for (i, (label, value, col)) in items.iter().enumerate() {
