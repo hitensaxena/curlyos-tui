@@ -1213,6 +1213,20 @@ impl App {
                         label: "Mood infer".into(),
                     },
                 ),
+                (
+                    "Derive goals from memories".into(),
+                    MenuAction::Trigger {
+                        path: "/api/goals/derive".into(),
+                        label: "Goal derive".into(),
+                    },
+                ),
+                (
+                    "Extract decisions from episodes".into(),
+                    MenuAction::Trigger {
+                        path: "/api/decisions/extract".into(),
+                        label: "Extract decisions".into(),
+                    },
+                ),
                 ("Log mood…".into(), MenuAction::OpenLogMoodForm),
                 ("Compose narrative (query)…".into(), MenuAction::OpenComposeForm),
             ],
