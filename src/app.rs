@@ -172,6 +172,7 @@ pub enum Pending {
 pub enum MenuAction {
     Trigger { path: String, label: String },
     OpenComposeForm,
+    OpenLogMoodForm,
 }
 
 pub enum FormKind {
@@ -180,6 +181,7 @@ pub enum FormKind {
     Identity,
     Compose,
     NewJob,
+    LogMood,
     EditSetting { key: String },
 }
 
@@ -233,6 +235,11 @@ pub struct App {
     pub attention: Option<Attention>,
     pub reports: Vec<Report>,
     pub rep_sel: Sel,
+    // cognition v2 — mood, health, context
+    pub mood_history: Option<MoodHistory>,
+    pub health_signals: Option<HealthSignals>,
+    pub mental_model_ctx: Option<String>,
+    pub assumptions_ctx: Option<String>,
 
     // graph explorer
     pub graph: Graph,
@@ -242,6 +249,8 @@ pub struct App {
     pub graph_ego: Option<GraphExpand>,
     pub graph_filter: String,
     pub graph_editing: bool,
+    /// KG composition by originating data source (facebook/instagram/netflix/…)
+    pub data_sources: Vec<SourceRow>,
 
     // recall
     pub recall_mode: String,
@@ -313,6 +322,10 @@ impl App {
             attention: None,
             reports: vec![],
             rep_sel: Sel::default(),
+            mood_history: None,
+            health_signals: None,
+            mental_model_ctx: None,
+            assumptions_ctx: None,
             graph: Graph { nodes: vec![], links: vec![] },
             node_sel: Sel::default(),
             graph_focus: None,
@@ -320,6 +333,7 @@ impl App {
             graph_ego: None,
             graph_filter: String::new(),
             graph_editing: false,
+            data_sources: Vec::new(),
             recall_mode: "fast".into(),
             recall_query: String::new(),
             recall_hits: vec![],
@@ -586,18 +600,25 @@ impl App {
                     self.send(Req::Attention);
                     self.send(Req::Narrative);
                     self.send(Req::Reflections);
+                    self.send(Req::MentalModelContext);
+                    self.send(Req::AssumptionsContext);
                 }
                 1 => {
                     self.send(Req::Identity);
                     self.send(Req::Principles);
                 }
-                2 => self.send(Req::Attention),
+                2 => {
+                    self.send(Req::Attention);
+                    self.send(Req::MoodHistory { days: 14 });
+                    self.send(Req::HealthSignals { days: 14 });
+                }
                 3 => self.send(Req::Narrative),
                 _ => self.send(Req::Reflections),
             },
             Tab::Graph => {
                 self.send(Req::Graph(120));
                 self.send(Req::Attention); // whole-graph type distribution
+                self.send(Req::DataSources); // KG composition by data source
                 if let Some(fc) = &self.graph_focus {
                     let id = fc.id.clone();
                     self.send(Req::Expand { id, k: 1 });
@@ -669,6 +690,11 @@ impl App {
                 self.chapters = v;
             }
             Resp::Attention(a) => self.attention = Some(*a),
+            Resp::DataSources(d) => self.data_sources = d.sources,
+            Resp::MoodHistory(m) => self.mood_history = Some(*m),
+            Resp::HealthSignals(h) => self.health_signals = Some(*h),
+            Resp::MentalModelContext(c) => self.mental_model_ctx = Some(c.context),
+            Resp::AssumptionsContext(c) => self.assumptions_ctx = Some(c.context),
             Resp::Reflections(v) => {
                 self.rep_sel.set_len(v.len());
                 self.reports = v;
@@ -1139,6 +1165,13 @@ impl App {
             title: "Trigger cognition job".into(),
             items: vec![
                 (
+                    "Daily reflection".into(),
+                    MenuAction::Trigger {
+                        path: "/api/reflection/daily".into(),
+                        label: "Daily reflection".into(),
+                    },
+                ),
+                (
                     "Weekly reflection".into(),
                     MenuAction::Trigger {
                         path: "/api/reflection/weekly".into(),
@@ -1173,6 +1206,14 @@ impl App {
                         label: "Attention scan".into(),
                     },
                 ),
+                (
+                    "Infer mood from episode".into(),
+                    MenuAction::Trigger {
+                        path: "/api/attention/mood/infer".into(),
+                        label: "Mood infer".into(),
+                    },
+                ),
+                ("Log mood…".into(), MenuAction::OpenLogMoodForm),
                 ("Compose narrative (query)…".into(), MenuAction::OpenComposeForm),
             ],
             sel: 0,
@@ -1225,6 +1266,16 @@ impl App {
                 ],
                 active: 0,
             },
+            FormKind::LogMood => Form {
+                kind,
+                title: "Log mood".into(),
+                fields: vec![
+                    FormField { label: "mood (focused|tired|anxious|energetic|calm|sad|…)".into(), value: String::new() },
+                    FormField { label: "valence (-1.0 to 1.0)".into(), value: "0.0".into() },
+                    FormField { label: "energy (0.0 to 1.0)".into(), value: "0.5".into() },
+                ],
+                active: 0,
+            },
             // Built via open_setting_edit (it needs the current value); never here.
             FormKind::EditSetting { .. } => return,
         };
@@ -1267,6 +1318,7 @@ impl App {
                             self.send(Req::Trigger { path, label, body: serde_json::json!({}) })
                         }
                         MenuAction::OpenComposeForm => self.open_form(FormKind::Compose),
+                        MenuAction::OpenLogMoodForm => self.open_form(FormKind::LogMood),
                     }
                 }
                 _ => {}
@@ -1371,6 +1423,16 @@ impl App {
                     self.status = Some(("predicate and object are required".into(), true));
                 } else {
                     self.send(Req::ProposeIdentity { predicate, object, confidence });
+                }
+            }
+            FormKind::LogMood => {
+                let mood = form.fields[0].value.trim().to_string();
+                let valence = form.fields[1].value.trim().parse::<f64>().unwrap_or(0.0);
+                let energy = form.fields[2].value.trim().parse::<f64>().unwrap_or(0.5);
+                if mood.is_empty() {
+                    self.status = Some(("mood is required".into(), true));
+                } else {
+                    self.send(Req::LogMood { mood, valence, energy });
                 }
             }
             FormKind::NewJob => {

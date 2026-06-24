@@ -75,6 +75,9 @@ fn selftest(base: &str) -> Result<()> {
     println!("  attention   load={:.2} focus={}", a.cognitive_load.score, a.focus_areas.len());
     println!("  reflections {}", c.reflections()?.len());
     println!("  graph       {} nodes", c.graph(20)?.nodes.len());
+    let ds = c.data_sources()?;
+    let personal = ds.sources.iter().filter(|s| s.kind == "personal").count();
+    println!("  sources     {} total · {} personal", ds.sources.len(), personal);
     println!("  recall      {} hits", c.recall("who am I", "fast", 3)?.len());
     let sys = c.systems()?;
     println!("  systems     {} infra · {} engines · sched_running={}", sys.infrastructure.len(), sys.engines.len(), sys.scheduler.running);

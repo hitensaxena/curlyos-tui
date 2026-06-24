@@ -130,6 +130,31 @@ impl Client {
     pub fn attention(&self) -> Result<Attention> {
         self.get("/api/cognition/attention")
     }
+    pub fn mood_history(&self, days: i64) -> Result<MoodHistory> {
+        self.get(&format!("/api/attention/mood?days={days}"))
+    }
+    pub fn health_signals(&self, days: i64) -> Result<HealthSignals> {
+        self.get(&format!("/api/attention/health?days={days}"))
+    }
+    pub fn mental_model_context(&self) -> Result<ContextResp> {
+        self.get("/api/cognition/mental-models/context")
+    }
+    pub fn assumptions_context(&self) -> Result<ContextResp> {
+        self.get("/api/cognition/assumptions/context")
+    }
+    pub fn mood_infer(&self) -> Result<MoodLog> {
+        self.post("/api/attention/mood/infer", serde_json::json!({}))
+    }
+    pub fn log_mood(&self, mood: &str, valence: f64, energy: f64) -> Result<MoodLog> {
+        self.post("/api/attention/mood", serde_json::json!({
+            "mood": mood, "valence": valence, "energy": energy,
+        }))
+    }
+    pub fn run_reflection(&self, report_type: &str) -> Result<serde_json::Value> {
+        self.post("/api/reflection/run", serde_json::json!({
+            "report_type": report_type,
+        }))
+    }
     pub fn reflections(&self) -> Result<Vec<Report>> {
         let r: Reflections = self.get("/api/cognition/reflection")?;
         Ok(r.reports)
@@ -137,6 +162,10 @@ impl Client {
 
     pub fn graph(&self, limit: usize) -> Result<Graph> {
         self.get(&format!("/api/graph?limit={limit}"))
+    }
+
+    pub fn data_sources(&self) -> Result<DataSources> {
+        self.get("/api/graph/sources")
     }
 
     pub fn expand(&self, id: &str, k: usize) -> Result<GraphExpand> {
@@ -494,6 +523,89 @@ pub struct LoadBreakdown {
     pub window_days: i64,
 }
 
+// ── Mood & health ─────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct MoodLog {
+    #[serde(default)]
+    pub mood: String,
+    #[serde(default)]
+    pub valence: f64,
+    #[serde(default)]
+    pub energy: f64,
+    #[serde(default)]
+    pub logged_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct MoodHistory {
+    #[serde(default)]
+    pub entries: Vec<MoodEntry>,
+    pub summary: MoodSummary,
+}
+
+#[derive(Deserialize)]
+pub struct MoodEntry {
+    #[serde(default)]
+    pub mood: String,
+    #[serde(default)]
+    pub valence: f64,
+    #[serde(default)]
+    pub energy: f64,
+    #[serde(default)]
+    pub logged_at: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct MoodSummary {
+    #[serde(default)]
+    pub avg_valence: f64,
+    #[serde(default)]
+    pub avg_energy: f64,
+    #[serde(default)]
+    pub dominant_mood: Option<String>,
+    #[serde(default)]
+    pub trend: String,
+    #[serde(default)]
+    pub total_entries: i64,
+}
+
+#[derive(Deserialize)]
+pub struct HealthSignals {
+    #[serde(default)]
+    pub sleep: HealthMetric,
+    #[serde(default)]
+    pub exercise: HealthMetric,
+    #[serde(default)]
+    pub sick: HealthMetric,
+    #[serde(default)]
+    pub food: HealthMetric,
+    #[serde(default)]
+    pub mental_health: HealthMetric,
+    #[serde(default)]
+    pub mood_summary: Option<MoodSummary>,
+    #[serde(default)]
+    pub window_days: i64,
+    #[serde(default)]
+    pub total_episodes_scanned: i64,
+}
+
+#[derive(Deserialize, Default)]
+pub struct HealthMetric {
+    #[serde(default)]
+    pub mentions: i64,
+    #[serde(default)]
+    pub active: bool,
+}
+
+#[derive(Deserialize)]
+pub struct ContextResp {
+    #[serde(default)]
+    pub context: String,
+}
+
 #[derive(Deserialize)]
 struct Reflections {
     #[serde(default)]
@@ -547,6 +659,26 @@ pub struct Link {
     pub target: String,
     #[serde(default)]
     pub rel_type: Option<String>,
+}
+
+/// KG composition by originating data source, from `/api/graph/sources`.
+#[derive(Deserialize, Default)]
+pub struct DataSources {
+    #[serde(default)]
+    pub sources: Vec<SourceRow>,
+}
+
+#[derive(Deserialize, Clone, Default)]
+pub struct SourceRow {
+    pub source: String,
+    #[serde(default)]
+    pub entities: i64,
+    #[serde(default)]
+    pub memories: i64,
+    #[serde(default)]
+    pub episodes: i64,
+    #[serde(default)]
+    pub kind: String,
 }
 
 /// A node's true k-hop neighbourhood from `/api/graph/{id}/expand`.

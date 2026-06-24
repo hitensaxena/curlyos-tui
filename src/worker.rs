@@ -20,6 +20,7 @@ pub enum Req {
     Attention,
     Reflections,
     Graph(usize),
+    DataSources,
     Expand { id: String, k: usize },
     Recall { query: String, mode: String, k: usize },
     Systems,
@@ -43,6 +44,12 @@ pub enum Req {
     UpdateJob { id: String, label: String, body: serde_json::Value },
     DeleteJob { id: String, name: String },
     CancelRun { id: String },
+    // cognition engine v2
+    MoodHistory { days: i64 },
+    HealthSignals { days: i64 },
+    MentalModelContext,
+    AssumptionsContext,
+    LogMood { mood: String, valence: f64, energy: f64 },
 }
 
 pub enum Resp {
@@ -57,6 +64,7 @@ pub enum Resp {
     Attention(Box<Attention>),
     Reflections(Vec<Report>),
     Graph(Box<Graph>),
+    DataSources(Box<DataSources>),
     Expand(Box<GraphExpand>),
     Recall(Vec<RecallHit>),
     /// systems payload + measured round-trip latency in ms
@@ -72,6 +80,11 @@ pub enum Resp {
     AgentRuns(Vec<AgentRun>),
     AgentRun(Box<AgentRunDetail>),
     ScheduledJobs(Vec<ScheduledJob>),
+    // cognition engine v2
+    MoodHistory(Box<MoodHistory>),
+    HealthSignals(Box<HealthSignals>),
+    MentalModelContext(Box<ContextResp>),
+    AssumptionsContext(Box<ContextResp>),
     /// A write/trigger succeeded; carries a human-facing message + whether the
     /// caller should refresh the active view.
     ActionOk { msg: String, refresh: bool },
@@ -107,6 +120,7 @@ fn handle(c: &Client, req: Req) -> Resp {
         Req::Attention => wrap(c.attention(), |a| Resp::Attention(Box::new(a))),
         Req::Reflections => wrap(c.reflections(), Resp::Reflections),
         Req::Graph(limit) => wrap(c.graph(limit), |g| Resp::Graph(Box::new(g))),
+        Req::DataSources => wrap(c.data_sources(), |d| Resp::DataSources(Box::new(d))),
         Req::Expand { id, k } => wrap(c.expand(&id, k), |e| Resp::Expand(Box::new(e))),
         Req::Recall { query, mode, k } => wrap(c.recall(&query, &mode, k), Resp::Recall),
         Req::Systems => {
@@ -169,6 +183,14 @@ fn handle(c: &Client, req: Req) -> Resp {
         Req::CancelRun { id } => match c.cancel_agent_run(&id) {
             Ok(()) => Resp::ActionOk { msg: format!("Cancelled {id}"), refresh: true },
             Err(e) => Resp::Error(format!("cancel run: {e}")),
+        },
+        Req::MoodHistory { days } => wrap(c.mood_history(days), |v| Resp::MoodHistory(Box::new(v))),
+        Req::HealthSignals { days } => wrap(c.health_signals(days), |v| Resp::HealthSignals(Box::new(v))),
+        Req::MentalModelContext => wrap(c.mental_model_context(), |v| Resp::MentalModelContext(Box::new(v))),
+        Req::AssumptionsContext => wrap(c.assumptions_context(), |v| Resp::AssumptionsContext(Box::new(v))),
+        Req::LogMood { mood, valence, energy } => match c.log_mood(&mood, valence, energy) {
+            Ok(_) => Resp::ActionOk { msg: format!("Logged mood: {mood}"), refresh: false },
+            Err(e) => Resp::Error(format!("log mood: {e}")),
         },
     }
 }

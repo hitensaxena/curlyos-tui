@@ -137,7 +137,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         (Tab::Memory, _) => "/ edit query · m mode · enter open memory",
         (Tab::Mind, 0) => "h/l explore · a propose identity · t trigger cognition job",
         (Tab::Mind, 1) => "↑↓ browse identity · a propose · t trigger",
-        (Tab::Mind, _) => "↑↓ browse · t trigger reflection/narrative/consolidation",
+        (Tab::Mind, _) => "↑↓ browse · t trigger cognition · m log mood",
         (Tab::Graph, _) => "↵ explore connections · ⌫/esc back · / search · ↑↓ move",
         (Tab::Systems, 1) => "enter inspect · c cancel running · esc close · auto-refreshing",
         (Tab::Systems, 2) => "↑↓ jobs · e toggle · x run now · d delete · n new",
@@ -596,7 +596,7 @@ fn current_chapter(app: &App) -> Option<&Chapter> {
 fn draw_mind_overview(f: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(6), Constraint::Length(13), Constraint::Min(0)])
+        .constraints([Constraint::Length(6), Constraint::Length(13), Constraint::Length(6), Constraint::Min(0)])
         .split(area);
 
     // KPI cards
@@ -683,11 +683,42 @@ fn draw_mind_overview(f: &mut Frame, app: &App, area: Rect) {
     }
     f.render_widget(Paragraph::new(focus).block(panel("What I'm on")), mid[2]);
 
+    // cognition context: mental models · assumptions
+    let ctx = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[2]);
+    let mm: Vec<Line> = if let Some(ctx_str) = &app.mental_model_ctx {
+        if ctx_str.is_empty() {
+            vec![Line::from(Span::styled("  no mental models yet", Style::default().fg(FAINT)))]
+        } else {
+            ctx_str.lines().take(5).map(|l| {
+                Line::from(Span::styled(format!("  {l}"), Style::default().fg(TEXT)))
+            }).collect()
+        }
+    } else {
+        vec![Line::from(Span::styled("  press r to load", Style::default().fg(FAINT)))]
+    };
+    f.render_widget(Paragraph::new(mm).block(panel("Mental models")), ctx[0]);
+
+    let asm: Vec<Line> = if let Some(ctx_str) = &app.assumptions_ctx {
+        if ctx_str.is_empty() {
+            vec![Line::from(Span::styled("  no assumptions yet", Style::default().fg(FAINT)))]
+        } else {
+            ctx_str.lines().take(5).map(|l| {
+                Line::from(Span::styled(format!("  {l}"), Style::default().fg(TEXT)))
+            }).collect()
+        }
+    } else {
+        vec![Line::from(Span::styled("  press r to load", Style::default().fg(FAINT)))]
+    };
+    f.render_widget(Paragraph::new(asm).block(panel("Assumptions")), ctx[1]);
+
     // bottom: current chapter · latest insight
     let bottom = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(rows[2]);
+        .split(rows[3]);
 
     let chap: Vec<Line> = match current_chapter(app) {
         Some(c) => vec![
@@ -862,6 +893,63 @@ fn draw_focus(f: &mut Frame, app: &App, area: Rect) {
         Line::from(Span::styled("  0 = broad · 1 = narrow", Style::default().fg(FAINT))),
     ];
     f.render_widget(Paragraph::new(breadth).block(panel("Breadth of mind")).wrap(Wrap { trim: true }), right[1]);
+
+    // ── Mood & Health (new row below) ─────────────────────────────────────────
+    let mood_health = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[1]);
+
+    // Mood panel
+    let mut mood_lines: Vec<Line> = vec![];
+    if let Some(mh) = &app.mood_history {
+        let s = &mh.summary;
+        mood_lines.push(Line::from(vec![
+            Span::styled(format!("  Mood: {}", s.dominant_mood.as_deref().unwrap_or("—")), Style::default().fg(CYAN).bold()),
+            Span::raw("  "),
+            Span::styled(format!("valence {:.2} · energy {:.2}", s.avg_valence, s.avg_energy), Style::default().fg(TEXT)),
+        ]));
+        mood_lines.push(Line::from(vec![
+            Span::styled(format!("  Trend: {}  ({} logs)", s.trend, s.total_entries), Style::default().fg(DIM)),
+        ]));
+        // Show recent mood entries as a mini timeline
+        let timeline: String = mh.entries.iter().rev().take(10).map(|e| {
+            let c = if e.valence > 0.3 { "🟢" } else if e.valence < -0.3 { "🔴" } else { "🟡" };
+            c
+        }).collect::<Vec<_>>().join("");
+        if !timeline.is_empty() {
+            mood_lines.push(Line::from(Span::styled(format!("  {timeline}"), Style::default().fg(DIM))));
+        }
+    } else {
+        mood_lines.push(Line::from(Span::styled("  press r to load", Style::default().fg(FAINT))));
+    }
+    f.render_widget(Paragraph::new(mood_lines).block(panel("Mood")), mood_health[0]);
+
+    // Health panel
+    let mut health_lines: Vec<Line> = vec![];
+    if let Some(hs) = &app.health_signals {
+        let health_items = [
+            ("Sleep", hs.sleep.mentions, hs.sleep.active),
+            ("Exercise", hs.exercise.mentions, hs.exercise.active),
+            ("Sickness", hs.sick.mentions, hs.sick.active),
+            ("Food", hs.food.mentions, hs.food.active),
+            ("Mental health", hs.mental_health.mentions, hs.mental_health.active),
+        ];
+        for (label, mentions, active) in &health_items {
+            let icon = if *active { "✓" } else { "·" };
+            health_lines.push(Line::from(vec![
+                Span::styled(format!("  {icon} {label}"), Style::default().fg(if *active { GREEN } else { FAINT })),
+                Span::raw("  "),
+                Span::styled(format!("{mentions} mentions"), Style::default().fg(DIM)),
+            ]));
+        }
+        health_lines.push(Line::from(Span::styled(
+            format!("  {} episodes scanned", hs.total_episodes_scanned), Style::default().fg(FAINT),
+        )));
+    } else {
+        health_lines.push(Line::from(Span::styled("  press r to load", Style::default().fg(FAINT))));
+    }
+    f.render_widget(Paragraph::new(health_lines).block(panel("Health signals")), mood_health[1]);
 }
 
 // ── Mind · Story (narrative) ─────────────────────────────────────────────────
@@ -1103,6 +1191,21 @@ fn graph_overview_card(app: &App) -> Text<'static> {
         entries.sort_by(|x, y| y.1.cmp(x.1));
         for (k, v) in entries.into_iter().take(12) {
             lines.push(hbar(k, *v, max, 16, type_color(k)));
+        }
+    }
+    // Knowledge by data source — reflects the multi-service graph (facebook,
+    // instagram, whatsapp, linkedin, netflix, spotify, gdata, social-graph …).
+    let personal: Vec<&SourceRow> = app
+        .data_sources
+        .iter()
+        .filter(|s| s.kind == "personal" && s.entities > 0)
+        .collect();
+    if !personal.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(head("Knowledge by data source"));
+        let smax = personal.iter().map(|s| s.entities).max().unwrap_or(1);
+        for s in personal.iter().take(14) {
+            lines.push(hbar(&s.source, s.entities, smax, 16, type_color(&s.source)));
         }
     }
     lines.push(Line::from(""));
