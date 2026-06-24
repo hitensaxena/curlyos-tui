@@ -1560,17 +1560,29 @@ fn draw_sys_overview(f: &mut Frame, app: &App, area: Rect) {
     let mut eng: Vec<Line> = vec![];
     for e in &sys.engines {
         let active = e.runs_24h > 0;
-        let col = if active { MINT } else { FAINT };
+        let recent = e.runs_7d > 0;
+        let col = if active { MINT } else if recent { PERI } else { FAINT };
+        let dot = if active { "●" } else if recent { "◌" } else { "·" };
         eng.push(Line::from(vec![
-            Span::styled(format!("  {}", fit(e.label.as_deref().unwrap_or(&e.name), 22)), Style::default().fg(if active { TEXT } else { DIM })),
-            Span::styled(bar_str(e.runs_7d, emax, 14), Style::default().fg(col)),
-            Span::styled(format!(" {:>5}/7d", e.runs_7d), Style::default().fg(DIM)),
-            Span::styled(format!("  {:>3}/24h", e.runs_24h), Style::default().fg(if active { MINT } else { FAINT })),
+            Span::styled(format!(" {} ", dot), Style::default().fg(col)),
+            Span::styled(fit(e.label.as_deref().unwrap_or(&e.name), 22), Style::default().fg(if recent { TEXT } else { DIM })),
+            Span::styled(bar_str(e.runs_7d, emax, 10), Style::default().fg(col)),
+            Span::styled(format!(" {:>4}/7d", e.runs_7d), Style::default().fg(if recent { col } else { FAINT })),
+            Span::styled(format!(" {:>3}/1d", e.runs_24h), Style::default().fg(if active { MINT } else { DIM })),
         ]));
-        eng.push(Line::from(Span::styled(
-            format!("    last run {}", e.last_run.as_deref().map(|d| fmt_date(Some(d))).unwrap_or_else(|| "—".into())),
-            Style::default().fg(FAINT),
-        )));
+        // Show last event type if available (tells us WHAT the engine did)
+        if let Some(etype) = &e.last_event_type {
+            eng.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(format!("{}", short_event(etype)), Style::default().fg(DIM)),
+                Span::styled(format!(" · {}", e.last_run.as_deref().map(|d| fmt_date(Some(d))).unwrap_or_else(|| "—".into())), Style::default().fg(FAINT)),
+            ]));
+        } else {
+            eng.push(Line::from(Span::styled(
+                format!("    last run {}", e.last_run.as_deref().map(|d| fmt_date(Some(d))).unwrap_or_else(|| "never run".into())),
+                Style::default().fg(FAINT),
+            )));
+        }
     }
     f.render_widget(Paragraph::new(eng).block(panel(&format!("Engines · 7-day activity ({})", sys.engines.len()))), botcols[0]);
 
@@ -1753,16 +1765,33 @@ fn draw_sys_scheduler(f: &mut Frame, app: &mut App, area: Rect) {
 
     let mut cron: Vec<Line> = vec![];
     if let Some(s) = &app.scheduler {
+        // Column header
+        cron.push(Line::from(vec![
+            Span::styled("  NAME", Style::default().fg(DIM).bold()),
+            Span::styled("CADENCE      ", Style::default().fg(DIM).bold()),
+            Span::styled("NEXT RUN   ", Style::default().fg(DIM).bold()),
+            Span::styled("LAST RUN   ", Style::default().fg(DIM).bold()),
+            Span::styled("STATUS  ", Style::default().fg(DIM).bold()),
+        ]));
         for j in &s.jobs {
+            let status_icon = match j.last_status.as_deref() {
+                Some("ok") => Span::styled("✔", Style::default().fg(GREEN)),
+                Some("error") => Span::styled("✘", Style::default().fg(RED)),
+                Some(s) => Span::styled(format!("{}", &s[..s.len().min(1)]), Style::default().fg(DIM)),
+                None => Span::styled("·", Style::default().fg(FAINT)),
+            };
+            let fail_indicator = if j.consecutive_failures > 0 {
+                Span::styled(format!("{}✗", j.consecutive_failures), Style::default().fg(RED).bold())
+            } else {
+                Span::styled("  ", Style::default().fg(FAINT))
+            };
             cron.push(Line::from(vec![
-                job_status_dot(j.last_status.as_deref()),
-                Span::styled(format!("{:<22}", truncate(&j.name, 22)), Style::default().fg(TEXT)),
-                Span::styled(truncate(j.cadence.as_deref().unwrap_or(""), 14), Style::default().fg(FAINT)),
-                if j.consecutive_failures > 0 {
-                    Span::styled(format!("  {}✗", j.consecutive_failures), Style::default().fg(RED).bold())
-                } else {
-                    Span::raw("")
-                },
+                Span::styled(format!(" {}", truncate(&j.name, 22)), Style::default().fg(TEXT).bold()),
+                Span::styled(format!("{:14}", truncate(j.cadence.as_deref().unwrap_or("—"), 14)), Style::default().fg(PERI)),
+                Span::styled(format!("{:12}", fmt_date_short(j.next_due.as_deref())), Style::default().fg(FAINT)),
+                Span::styled(format!("{:12}", fmt_date_short(j.last_fired.as_deref())), Style::default().fg(if j.last_fired.is_some() { TEXT } else { FAINT })),
+                status_icon,
+                fail_indicator,
             ]));
         }
     }
@@ -2276,7 +2305,12 @@ fn draw_sys_pipeline(f: &mut Frame, app: &App, area: Rect) {
     }
     f.render_widget(Paragraph::new(left).block(panel("Pipeline backlog")), cols[0]);
 
-    // right: recall cache metrics
+    // right: recall cache + LLM tier usage
+    let rcols = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
+        .split(cols[1]);
+
     let mut right: Vec<Line> = vec![];
     if let Some(r) = rc {
         right.push(backlog_row("requests", r.requests, TEXT));
@@ -2299,7 +2333,31 @@ fn draw_sys_pipeline(f: &mut Frame, app: &App, area: Rect) {
     } else {
         right.push(Line::from(Span::styled("  loading recall…", Style::default().fg(DIM))));
     }
-    f.render_widget(Paragraph::new(right).block(panel("Recall · cache")), cols[1]);
+    f.render_widget(Paragraph::new(right).block(panel("Recall · cache")), rcols[0]);
+
+    // LLM tier usage (from observability)
+    let mut llm: Vec<Line> = vec![];
+    if let Some(obs) = &app.llm_obs {
+        for name in ["fast", "deep", "agentic"] {
+            if let Some(t) = obs.tiers.get(name) {
+                let err_col = if t.errors > 0 { RED } else { DIM };
+                llm.push(Line::from(vec![
+                    Span::styled(format!(" {}", fit(name, 8)), Style::default().fg(if t.configured { PERI } else { FAINT }).bold()),
+                    Span::styled(fit(&t.model, 18), Style::default().fg(if t.configured { TEXT } else { DIM })),
+                    Span::styled(format!(" {:>4}c", t.calls), Style::default().fg(if t.calls > 0 { GREEN } else { DIM })),
+                    Span::styled(format!("{:>3}e", t.errors), Style::default().fg(err_col)),
+                    Span::styled(format!(" {:>3}f", t.fallbacks), Style::default().fg(if t.fallbacks > 0 { AMBER } else { DIM })),
+                    Span::styled(format!(" {:>4}ms", t.avg_latency_ms as i64), Style::default().fg(if t.avg_latency_ms > 4000.0 { RED } else { GREEN })),
+                ]));
+            }
+        }
+        llm.push(Line::from(Span::styled(
+            format!("  uptime {:.0}s", obs.uptime_seconds), Style::default().fg(FAINT),
+        )));
+    } else {
+        llm.push(Line::from(Span::styled("  loading LLM…", Style::default().fg(DIM))));
+    }
+    f.render_widget(Paragraph::new(llm).block(panel("LLM tiers")), rcols[1]);
 }
 
 fn backlog_row(label: &str, n: i64, col: Color) -> Line<'static> {
@@ -2737,6 +2795,14 @@ fn fmt_bytes(n: i64) -> String {
 fn fmt_date(s: Option<&str>) -> String {
     match s {
         Some(t) if t.len() >= 16 => t[..16].replace('T', " "),
+        Some(t) => t.to_string(),
+        None => "—".into(),
+    }
+}
+
+fn fmt_date_short(s: Option<&str>) -> String {
+    match s {
+        Some(t) if t.len() >= 10 => t[5..10].to_string(),
         Some(t) => t.to_string(),
         None => "—".into(),
     }
