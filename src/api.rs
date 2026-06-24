@@ -127,6 +127,14 @@ impl Client {
         let r: Narrative = self.get("/api/cognition/narrative")?;
         Ok(r.chapters)
     }
+    pub fn goals(&self) -> Result<Vec<Goal>> {
+        let r: Items<Goal> = self.get("/api/goals")?;
+        Ok(r.items)
+    }
+    pub fn decisions(&self) -> Result<Vec<Decision>> {
+        let r: Items<Decision> = self.get("/api/decisions")?;
+        Ok(r.items)
+    }
     pub fn attention(&self) -> Result<Attention> {
         self.get("/api/cognition/attention")
     }
@@ -450,6 +458,34 @@ pub struct Principle {
     pub domain: Option<String>,
     #[serde(default)]
     pub epistemic_status: Option<String>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct Goal {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub progress: f64,
+    #[serde(default)]
+    pub horizon: Option<String>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct Decision {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub chosen: Option<String>,
+    #[serde(default)]
+    pub rationale: Option<String>,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub decided_at: Option<String>,
 }
 
 #[derive(Deserialize)]

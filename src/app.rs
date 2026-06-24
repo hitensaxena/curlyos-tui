@@ -8,7 +8,7 @@ use std::sync::mpsc::Sender;
 
 pub const TABS: [&str; 5] = ["Home", "Memory", "Mind", "Graph", "Systems"];
 pub const MEM_SUBS: [&str; 3] = ["Browse", "Episodes", "Recall"];
-pub const MIND_SUBS: [&str; 5] = ["Overview", "Self", "Focus", "Story", "Insights"];
+pub const MIND_SUBS: [&str; 7] = ["Overview", "Self", "Focus", "Story", "Insights", "Goals", "Decisions"];
 pub const SYS_SUBS: [&str; 8] =
     ["Overview", "Agents", "Scheduler", "Events", "Logs", "Routing", "Pipeline", "Settings"];
 pub const EVENT_CATS: [&str; 8] =
@@ -240,6 +240,10 @@ pub struct App {
     pub health_signals: Option<HealthSignals>,
     pub mental_model_ctx: Option<String>,
     pub assumptions_ctx: Option<String>,
+    pub goals: Vec<Goal>,
+    pub goal_sel: Sel,
+    pub decisions: Vec<Decision>,
+    pub dec_sel: Sel,
 
     // graph explorer
     pub graph: Graph,
@@ -326,6 +330,10 @@ impl App {
             health_signals: None,
             mental_model_ctx: None,
             assumptions_ctx: None,
+            goals: vec![],
+            goal_sel: Sel::default(),
+            decisions: vec![],
+            dec_sel: Sel::default(),
             graph: Graph { nodes: vec![], links: vec![] },
             node_sel: Sel::default(),
             graph_focus: None,
@@ -613,7 +621,10 @@ impl App {
                     self.send(Req::HealthSignals { days: 14 });
                 }
                 3 => self.send(Req::Narrative),
-                _ => self.send(Req::Reflections),
+                4 => self.send(Req::Reflections),
+                5 => self.send(Req::Goals),
+                6 => self.send(Req::Decisions),
+                _ => {}
             },
             Tab::Graph => {
                 self.send(Req::Graph(120));
@@ -692,6 +703,16 @@ impl App {
             Resp::Attention(a) => self.attention = Some(*a),
             Resp::DataSources(d) => self.data_sources = d.sources,
             Resp::MoodHistory(m) => self.mood_history = Some(*m),
+            Resp::Goals(v) => {
+                self.goal_sel.set_len(v.len());
+                if self.goal_sel.selected().is_none() { self.goal_sel.first(); }
+                self.goals = v;
+            }
+            Resp::Decisions(v) => {
+                self.dec_sel.set_len(v.len());
+                if self.dec_sel.selected().is_none() { self.dec_sel.first(); }
+                self.decisions = v;
+            }
             Resp::HealthSignals(h) => self.health_signals = Some(*h),
             Resp::MentalModelContext(c) => self.mental_model_ctx = Some(c.context),
             Resp::AssumptionsContext(c) => self.assumptions_ctx = Some(c.context),
@@ -929,7 +950,9 @@ impl App {
             Tab::Mind => match self.mind_sub {
                 1 => &mut self.id_sel,   // Self → identity list
                 3 => &mut self.chap_sel, // Story → chapters
-                4 => &mut self.rep_sel,  // Insights → reports
+                4 => &mut self.rep_sel,
+                5 => &mut self.goal_sel,
+                6 => &mut self.dec_sel,  // Insights → reports
                 _ => &mut self.node_sel, // Overview / Focus have no list
             },
             Tab::Graph => &mut self.node_sel,

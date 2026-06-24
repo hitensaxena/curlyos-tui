@@ -568,7 +568,9 @@ fn draw_mind(f: &mut Frame, app: &mut App, area: Rect) {
         1 => draw_self(f, app, rows[1]),
         2 => draw_focus(f, app, rows[1]),
         3 => draw_story(f, app, rows[1]),
-        _ => draw_insights(f, app, rows[1]),
+        4 => draw_insights(f, app, rows[1]),
+        5 => draw_goals(f, app, rows[1]),
+        _ => draw_decisions(f, app, rows[1]),
     }
 }
 
@@ -2814,4 +2816,66 @@ fn fmt_time(s: Option<&str>) -> String {
         Some(t) if t.len() >= 16 => t[11..16].to_string(),
         _ => "--:--".into(),
     }
+}
+
+// ── Mind · Goals ──────────────────────────────────────────────────────────
+fn draw_goals(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+    let active = app.goals.iter().filter(|g| g.status == "active").count();
+    let done = app.goals.iter().filter(|g| g.status == "achieved").count();
+    f.render_widget(
+        Paragraph::new(stat_bar(&[
+            ("active", fmt_int(active as i64), GREEN),
+            ("achieved", fmt_int(done as i64), MINT),
+            ("total", fmt_int(app.goals.len() as i64), PERI),
+        ])),
+        rows[0],
+    );
+    let items: Vec<ListItem> = app.goals.iter().map(|g| {
+        ListItem::new(vec![
+            Line::from(vec![
+                Span::styled(goal_bullet(&g.status), Style::default().fg(goal_status_color(&g.status))),
+                Span::styled(truncate(&g.title, 50), Style::default().fg(TEXT).bold()),
+            ]),
+            Line::from(vec![
+                Span::styled(format!("    {}", g.horizon.as_deref().unwrap_or("—")), Style::default().fg(FAINT)),
+                Span::styled(format!(" · progress {:.0}%", g.progress * 100.0), Style::default().fg(if g.progress > 0.0 { GREEN } else { DIM })),
+            ]),
+        ])
+    }).collect();
+    f.render_stateful_widget(list_of(format!("Goals ({})", app.goals.len()), items), rows[1], &mut app.goal_sel.state);
+}
+
+fn goal_status_color(s: &str) -> Color {
+    match s { "active" => GREEN, "achieved" => MINT, "paused" => AMBER, "abandoned" => DIM, _ => FAINT }
+}
+
+fn goal_bullet(s: &str) -> String {
+    match s { "active" => "●", "achieved" => "✔", "paused" => "◌", "abandoned" => "✕", _ => "·" }.into()
+}
+
+// ── Mind · Decisions ──────────────────────────────────────────────────────
+fn draw_decisions(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+    let concluded = app.decisions.iter().filter(|d| d.outcome.is_some()).count();
+    f.render_widget(
+        Paragraph::new(stat_bar(&[("total", fmt_int(app.decisions.len() as i64), PERI),
+            ("concluded", fmt_int(concluded as i64), MINT)])),
+        rows[0],
+    );
+    let items: Vec<ListItem> = app.decisions.iter().map(|d| {
+        let icon = if d.outcome.is_some() { "✔" } else { "·" };
+        ListItem::new(vec![
+            Line::from(vec![Span::styled(icon, Style::default().fg(if d.outcome.is_some() { GREEN } else { DIM })),
+                Span::styled(truncate(&d.title, 60), Style::default().fg(TEXT).bold())]),
+            Line::from(vec![Span::styled(format!("  chosen: {}", truncate(d.chosen.as_deref().unwrap_or("—"), 40)), Style::default().fg(FAINT))]),
+        ])
+    }).collect();
+    f.render_stateful_widget(list_of(format!("Decisions ({})", app.decisions.len()), items), rows[1], &mut app.dec_sel.state);
 }

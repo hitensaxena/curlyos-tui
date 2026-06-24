@@ -36,6 +36,8 @@ pub enum Req {
     AgentRuns(usize),
     AgentRun(String),
     ScheduledJobs,
+    Goals,
+    Decisions,
     Invalidate(String),
     ProposeIdentity { predicate: String, object: String, confidence: f64 },
     Ingest(String),
@@ -80,6 +82,8 @@ pub enum Resp {
     AgentRuns(Vec<AgentRun>),
     AgentRun(Box<AgentRunDetail>),
     ScheduledJobs(Vec<ScheduledJob>),
+    Goals(Vec<Goal>),
+    Decisions(Vec<Decision>),
     // cognition engine v2
     MoodHistory(Box<MoodHistory>),
     HealthSignals(Box<HealthSignals>),
@@ -145,6 +149,8 @@ fn handle(c: &Client, req: Req) -> Resp {
         Req::AgentRuns(n) => wrap(c.agent_runs(n), Resp::AgentRuns),
         Req::AgentRun(id) => wrap(c.agent_run(&id), |d| Resp::AgentRun(Box::new(d))),
         Req::ScheduledJobs => wrap(c.scheduled_jobs(), Resp::ScheduledJobs),
+        Req::Goals => wrap(c.goals(), Resp::Goals),
+        Req::Decisions => wrap(c.decisions(), Resp::Decisions),
         Req::Invalidate(id) => match c.invalidate_memory(&id) {
             Ok(()) => Resp::ActionOk { msg: format!("Invalidated {id}"), refresh: true },
             Err(e) => Resp::Error(format!("invalidate: {e}")),
