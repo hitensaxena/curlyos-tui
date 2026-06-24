@@ -18,4 +18,4 @@ anyhow = "1"
 
 [profile.release]
 opt-level = 2
-strip = true
+strip = false
